@@ -2060,7 +2060,13 @@
     }
   }
 
+  // The prompt travels in a link that another app turns into a command. Only name a case whose
+  // file name is plain letters, digits, dots, dashes and underscores, so nothing in it can mean
+  // anything to that app or a shell.
+  const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
   function reviewCase(c) {
+    if (!SAFE_ID.test(c.id)) return toast('To review this case from here, rename its file to use only letters, digits and dashes.', null, 6000);
     handOff(W.prompts.reviewCase(pathOf(c)));
   }
 
