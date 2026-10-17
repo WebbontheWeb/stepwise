@@ -483,11 +483,52 @@
     return issues.length ? 'info' : 'ok';
   }
 
+  // ---------- diff ----------
+
+  function splitLines(text) {
+    text = String(text ?? '').replace(/\r\n?/g, '\n');
+    return text ? text.replace(/\n$/, '').split('\n') : [];
+  }
+
+  /**
+   * Line diff of two texts (either may be null for a missing file), as
+   * [{ type: 'same' | 'del' | 'add', text }] in reading order. Uses the longest common subsequence,
+   * after setting aside the lines both texts start and end with.
+   */
+  function diffLines(before, after) {
+    const a = splitLines(before), b = splitLines(after);
+    let start = 0;
+    while (start < a.length && start < b.length && a[start] === b[start]) start++;
+    let ea = a.length, eb = b.length;
+    while (ea > start && eb > start && a[ea - 1] === b[eb - 1]) { ea--; eb--; }
+    const out = a.slice(0, start).map(text => ({ type: 'same', text }));
+    const x = a.slice(start, ea), y = b.slice(start, eb);
+    const n = x.length, m = y.length;
+    if (n * m > 4e6) {
+      // Too big to compare line by line: show it as replaced.
+      x.forEach(text => out.push({ type: 'del', text }));
+      y.forEach(text => out.push({ type: 'add', text }));
+    } else {
+      const lcs = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+      for (let i = n - 1; i >= 0; i--) {
+        for (let j = m - 1; j >= 0; j--) lcs[i][j] = x[i] === y[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+      }
+      let i = 0, j = 0;
+      while (i < n || j < m) {
+        if (i < n && j < m && x[i] === y[j]) { out.push({ type: 'same', text: x[i] }); i++; j++; }
+        else if (j >= m || (i < n && lcs[i + 1][j] >= lcs[i][j + 1])) out.push({ type: 'del', text: x[i++] });
+        else out.push({ type: 'add', text: y[j++] });
+      }
+    }
+    a.slice(ea).forEach(text => out.push({ type: 'same', text }));
+    return out;
+  }
+
   const api = {
     CASE_FIELDS, STATES, stepId, slugify, uniqueSlug,
     inlineToHtml, inlineToPlain, parseCase, writeCase, parseBlock, writeBlock, parseSteps, writeSteps, rangeLabel,
     createProject, blockTitleFn, resolveReferences, newStep, relatedOf, blockUsage, coverage,
-    flatten, toGridTSV, toCSV, lintCase, lintBlock, worstLevel,
+    flatten, toGridTSV, toCSV, lintCase, lintBlock, worstLevel, diffLines,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Stepwise = api;

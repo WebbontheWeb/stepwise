@@ -92,7 +92,7 @@
     saveState: 'saved',
     drag: null,
     copyPos: {},
-    changed: new Set(),
+    review: new Map(), // path -> { before, after }: changes made outside the app, not reviewed yet
     copyFlash: null,
   };
   const P = () => state.project;
@@ -194,6 +194,7 @@
         if (!path) continue;
         try {
           await writeFile(path, text);
+          if (state.review.delete(path)) renderSide();
         } catch (err) {
           // Changed outside Stepwise since it was loaded: the outside version wins and arrives
           // through the file watcher, so don't overwrite it.
@@ -272,7 +273,7 @@
     }
     state.project = loadFiles(opened.files);
     state.picked.clear();
-    state.changed.clear();
+    state.review.clear();
     LS.set('sw.mode', 'folder');
     await rememberFolder(opened.path);
     // Come back to the case you were on in this folder.
@@ -352,7 +353,7 @@
     await flush();
     await invoke('close_workspace');
     Object.assign(state, { mode: 'demo', root: null, current: null });
-    state.changed.clear();
+    state.review.clear();
     state.picked.clear();
     state.project = loadFiles(LS.get('sw.demo', null) || window.StepwiseSample);
     LS.set('sw.mode', 'demo');
@@ -406,7 +407,8 @@
 
   // ---------- changes made outside the app ----------
   // The Rust side watches cases/, blocks/ and stepwise.json and reports edits made by Claude, a
-  // teammate or git (never the app's own writes), with each file's text before and after.
+  // teammate or git (never the app's own writes), with each file's text before and after. Each
+  // changed file waits in "Changes from Claude" until you keep or undo it.
 
   function applyChanges(changes) {
     for (const { path, after } of changes) {
@@ -420,31 +422,141 @@
       }
       const [kind, id] = key.split(':');
       const map = kind === 'case' ? P().cases : P().blocks;
-      if (after == null) {
-        delete map[id];
-        state.changed.delete(key);
-      } else {
-        map[id] = kind === 'case' ? S.parseCase(id, after) : S.parseBlock(id, after);
-        state.changed.add(key);
-      }
+      if (after == null) delete map[id];
+      else map[id] = kind === 'case' ? S.parseCase(id, after) : S.parseBlock(id, after);
     }
     S.resolveReferences(P());
   }
 
   function onExternalChanges({ root, changes }) {
     if (state.mode !== 'folder' || root !== state.root) return;
-    // The outside version wins over edits not saved yet.
-    for (const { path } of changes) state.dirty.delete(keyOf(path));
+    for (const { path, before, after } of changes) {
+      // The outside version wins over edits not saved yet.
+      state.dirty.delete(keyOf(path));
+      // Keep the text from before the first change you haven't reviewed, so Undo goes all the way back.
+      const first = state.review.has(path) ? state.review.get(path).before : before;
+      if (first === after) state.review.delete(path);
+      else state.review.set(path, { before: first, after });
+    }
+    refreshAfterChanges(changes);
+    toast(`${plural(changes.length, 'file')} changed outside Stepwise`, state.review.size ? { label: 'Review', run: () => select({ kind: 'review' }) } : null);
+  }
+
+  function refreshAfterChanges(changes) {
     const cur = state.sel && `${state.sel.kind}:${state.sel.id}`;
     applyChanges(changes);
     if (!state.sel || ((state.sel.kind === 'case' || state.sel.kind === 'block') && !currentItem())) selectFirst();
-    else state.changed.delete(cur);
     renderTop();
     renderSide();
     // Leave the editor alone (and the caret where it is) unless what it shows has changed.
-    if (changes.some(c => keyOf(c.path) === cur || c.path.startsWith('blocks/')) || !currentItem()) rerenderMain();
+    if (state.sel?.kind === 'review' || changes.some(c => keyOf(c.path) === cur || c.path.startsWith('blocks/')) || !currentItem()) rerenderMain();
     renderPanel();
-    toast(`Reloaded ${plural(changes.length, 'file')} changed outside Stepwise`);
+    renderTermHead();
+  }
+
+  const pendingFor = item => state.review.has(pathOf(item));
+
+  function keepChange(path) {
+    state.review.delete(path);
+    renderSide();
+    rerenderMain();
+  }
+
+  // Puts the file back the way it was before the change: rewrites it, deletes a new file, or
+  // restores a deleted one.
+  async function undoChange(path) {
+    const r = state.review.get(path);
+    if (!r) return true;
+    await flush();
+    try {
+      if (r.before == null) await removeFile(path);
+      else await writeFile(path, r.before);
+    } catch (e) {
+      toast(e === 'changed-on-disk' ? `${path} changed again. Review the newest version first.` : `Couldn't undo ${path}: ${e}`);
+      return false;
+    }
+    state.review.delete(path);
+    state.dirty.delete(keyOf(path));
+    refreshAfterChanges([{ path, after: r.before }]);
+    return true;
+  }
+
+  async function undoAll() {
+    const paths = [...state.review.keys()];
+    const r = await ask({
+      title: `Undo ${plural(paths.length, 'change')}?`,
+      body: 'Every file listed goes back to how it was before it was changed outside Stepwise. New files are deleted and deleted files come back.',
+      buttons: [{ label: 'Cancel' }, { label: 'Undo all', value: 'ok', primary: true }],
+    });
+    if (!r) return;
+    let undone = 0;
+    for (const p of paths) if (await undoChange(p)) undone++;
+    toast(`Undid ${plural(undone, 'change')}`);
+  }
+
+  function keepAll() {
+    const n = state.review.size;
+    state.review.clear();
+    renderSide();
+    rerenderMain();
+    toast(`Kept ${plural(n, 'change')}`);
+  }
+
+  function renderReview() {
+    const entries = [...state.review.entries()].sort(([a], [b]) => a.localeCompare(b));
+    if (!entries.length) {
+      return h('div', { class: 'empty' },
+        h('h1', {}, 'No changes to review'),
+        h('p', {}, 'When Claude (or anyone else) changes files in this folder, they show up here so you can keep or undo each change.'));
+    }
+    return h('div', { class: 'doc review' },
+      h('div', { class: 'rv-top' },
+        h('div', {},
+          h('h1', {}, 'Changes from Claude'),
+          h('p', { class: 'help' }, `${plural(entries.length, 'file')} changed outside Stepwise since you last looked. Keep each change, or undo it to put the file back. Editing a file in Stepwise keeps its change.`)),
+        h('div', { class: 'acts' },
+          h('button', { class: 'btn', type: 'button', onclick: undoAll }, 'Undo all'),
+          h('button', { class: 'btn primary', type: 'button', onclick: keepAll }, icon('check'), 'Keep all'))),
+      entries.map(([path, r]) => renderFileChange(path, r)));
+  }
+
+  function renderFileChange(path, { before, after }) {
+    const key = keyOf(path);
+    const [kind, id] = (key || '').split(':');
+    const item = kind === 'case' ? P().cases[id] : kind === 'block' ? P().blocks[id] : null;
+    const status = before == null ? ['new', 'New'] : after == null ? ['gone', 'Deleted'] : ['changed', 'Changed'];
+    const lines = S.diffLines(before, after);
+    const added = lines.filter(l => l.type === 'add').length, removed = lines.filter(l => l.type === 'del').length;
+    return h('section', { class: 'rv-file', 'data-path': path },
+      h('div', { class: 'rv-head' },
+        h('span', { class: `rv-status ${status[0]}` }, status[1]),
+        h('span', { class: 'rv-name' },
+          item ? h('button', { class: 'link', type: 'button', onclick: () => select({ kind, id }) }, item.title || id) : null,
+          h('span', { class: 'path' }, path)),
+        h('span', { class: 'rv-count' }, h('span', { class: 'add' }, `+${added}`), ' ', h('span', { class: 'del' }, `−${removed}`)),
+        h('div', { class: 'acts' },
+          h('button', { class: 'btn small', type: 'button', onclick: () => undoChange(path) }, 'Undo'),
+          h('button', { class: 'btn small primary', type: 'button', onclick: () => keepChange(path) }, icon('check'), 'Keep'))),
+      renderDiff(lines));
+  }
+
+  // Changed lines with three lines of context; longer unchanged stretches fold into one row.
+  function renderDiff(lines) {
+    const near = lines.map(() => false);
+    lines.forEach((l, i) => { if (l.type !== 'same') for (let j = Math.max(0, i - 3); j <= Math.min(lines.length - 1, i + 3); j++) near[j] = true; });
+    const rows = [];
+    for (let i = 0; i < lines.length;) {
+      if (!near[i]) {
+        let j = i;
+        while (j < lines.length && !near[j]) j++;
+        rows.push(h('div', { class: 'dl skip' }, h('span', { class: 'mk' }), `${plural(j - i, 'unchanged line')}`));
+        i = j;
+        continue;
+      }
+      const l = lines[i++];
+      rows.push(h('div', { class: `dl ${l.type}` }, h('span', { class: 'mk', 'aria-label': l.type === 'add' ? 'Added' : l.type === 'del' ? 'Removed' : null }, l.type === 'add' ? '+' : l.type === 'del' ? '−' : ''), l.text || ' '));
+    }
+    return h('div', { class: 'diff' }, rows);
   }
 
   // ---------- selection ----------
@@ -454,7 +566,6 @@
     state.picked.clear();
     state.anchor = null;
     state.copyFlash = null;
-    if (sel) state.changed.delete(`${sel.kind}:${sel.id}`);
     setDrawer('side', false);
     LS.set('sw.sel', sel);
     if (state.mode === 'folder' && state.current) { state.current.sel = sel; saveFolders(); }
@@ -529,6 +640,10 @@
     const kids = [];
 
     kids.push(h('div', { class: 'sec' }, 'Views'));
+    if (state.review.size || cur.kind === 'review') kids.push(h('button', {
+      class: 'item flat nav', type: 'button', 'aria-current': cur.kind === 'review' ? 'true' : null,
+      onclick: () => select({ kind: 'review' }),
+    }, icon('sparkle'), h('span', { class: 't' }, 'Changes from Claude'), state.review.size ? h('span', { class: 'pill new' }, state.review.size) : null));
     kids.push(h('button', {
       class: 'item flat nav', type: 'button', 'aria-current': cur.kind === 'coverage' ? 'true' : null,
       onclick: () => select({ kind: 'coverage' }),
@@ -558,7 +673,7 @@
           onclick: () => select({ kind: 'case', id: c.id }),
         }, h('span', { class: `dot ${S.worstLevel(lintOf(c))}`, title: lintTitle(lintOf(c)) }),
           h('span', { class: 't' }, c.title || 'Untitled test case'),
-          state.changed.has(`case:${c.id}`) ? h('span', { class: 'pill new', title: 'Changed outside Stepwise' }, 'updated') : null,
+          pendingFor(c) ? updatedPill(c) : null,
           c.ado_id ? h('span', { class: 'm' }, `#${c.ado_id}`) : null));
       }
     }
@@ -572,12 +687,27 @@
         class: 'item flat', type: 'button', 'aria-current': cur.kind === 'block' && cur.id === b.id ? 'true' : null,
         onclick: () => select({ kind: 'block', id: b.id }),
       }, icon('block'), h('span', { class: 't' }, b.title || 'Untitled block'),
-        state.changed.has(`block:${b.id}`) ? h('span', { class: 'pill new', title: 'Changed outside Stepwise' }, 'updated') : null,
+        pendingFor(b) ? updatedPill(b) : null,
         h('span', { class: 'm', title: `Used by ${plural(uses, 'test case')}` }, `${uses}×`)));
     }
     if (!blocks.length) kids.push(h('div', { class: 'empty-side' }, q ? 'No matching blocks.' : 'Select steps in a test case and choose “Make reusable block”.'));
 
     $('#side').replaceChildren(...kids);
+  }
+
+  // The "updated" marker on a changed case or block leads to its change in the review.
+  function updatedPill(item) {
+    return h('span', {
+      class: 'pill new', role: 'link', tabindex: '0', title: 'Changed outside Stepwise. Review the change',
+      onclick(e) { e.stopPropagation(); reviewFile(pathOf(item)); },
+      onkeydown(e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); reviewFile(pathOf(item)); } },
+    }, 'updated');
+  }
+
+  function reviewFile(path) {
+    select({ kind: 'review' });
+    const el = document.querySelector(`#main .rv-file[data-path="${CSS.escape(path)}"]`);
+    if (el) { el.scrollIntoView({ block: 'start' }); el.classList.add('flash'); }
   }
 
   function lintTitle(issues) {
@@ -640,6 +770,7 @@
     const sel = state.sel;
     const main = $('#main');
     if (sel && sel.kind === 'coverage') return main.replaceChildren(renderCoverage());
+    if (sel && sel.kind === 'review') return main.replaceChildren(renderReview());
     const item = currentItem();
     if (!item) {
       const none = !Object.keys(P().cases).length;

@@ -385,6 +385,35 @@ select.mini { min-inline-size: 0; flex: 0 1 auto; }
 .cov .req { font-weight: 650; white-space: nowrap; }
 .cov .chips { gap: 6px; }
 
+/* ---------- review changes ---------- */
+
+.rv-top { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 18px; }
+.rv-top h1 { font-size: 22px; margin: 4px 0 4px; }
+.rv-top .help { font-size: 13.5px; margin: 0; }
+.rv-top .acts, .rv-head .acts { display: flex; gap: 6px; margin-left: auto; flex: none; }
+.rv-file { margin-bottom: 16px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--surface); scroll-margin-top: 16px; }
+.rv-file.flash { animation: flash 1.4s ease-out; }
+.rv-head { display: flex; align-items: center; gap: 10px; padding: 8px 10px 8px 12px; background: var(--bg); border-bottom: 1px solid var(--line); }
+.rv-status { flex: none; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 650; background: var(--sunken); color: var(--ink-2); }
+.rv-status.new { background: var(--accent-soft); color: var(--accent); }
+.rv-status.gone { background: var(--error-soft); color: var(--error); }
+.rv-name { display: flex; align-items: baseline; gap: 8px; min-width: 0; overflow: hidden; white-space: nowrap; }
+.rv-name .link { overflow: hidden; text-overflow: ellipsis; }
+.rv-name .path { color: var(--muted); font: 12px ui-monospace, "SF Mono", Menlo, monospace; overflow: hidden; text-overflow: ellipsis; }
+.rv-count { flex: none; font: 12px ui-monospace, "SF Mono", Menlo, monospace; }
+.rv-count .add { color: var(--accent); }
+.rv-count .del { color: var(--error); }
+.diff { overflow-x: auto; padding: 4px 0; font: 12.5px/1.55 ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+.dl { display: flex; min-width: fit-content; padding-right: 12px; white-space: pre; }
+.dl .mk { flex: none; width: 28px; text-align: center; color: var(--muted); user-select: none; }
+.dl.add { background: color-mix(in srgb, var(--accent) 13%, transparent); }
+.dl.add .mk { color: var(--accent); }
+.dl.del { background: var(--error-soft); }
+.dl.del .mk { color: var(--error); }
+.dl.skip { padding: 2px 12px 2px 0; color: var(--muted); font-family: system-ui, sans-serif; font-size: 12px; font-style: italic; background: var(--bg); }
+.item .pill.new { cursor: pointer; }
+.item .pill.new:hover { text-decoration: underline; }
+
 /* ---------- panel ---------- */
 
 .tabs { position: sticky; top: 0; z-index: 2; display: flex; gap: 2px; padding: 6px 12px 0; background: var(--bg); border-bottom: 1px solid var(--line); }

@@ -82,3 +82,17 @@ assert.strictEqual(S.inlineToPlain('Click **Save**\nthen *wait*'), 'Click Save\n
 const boldCase = S.parseCase('b', `---\ntitle: B\n---\n\n## Steps\n\n1. Click **Save** \`#bb01\`\n   Expected: A *toast* appears\n`);
 assert.match(S.toGridTSV(boldCase, S.flatten(p, boldCase), {}), /\tClick Save\tA toast appears/);
 console.log('formatting ok');
+
+// line diffs for reviewing changes made outside the app
+const kinds = d => d.map(l => (l.type === 'same' ? ' ' : l.type === 'add' ? '+' : '-') + l.text).join('|');
+assert.strictEqual(kinds(S.diffLines('a\nb\nc\n', 'a\nb\nc\n')), ' a| b| c');
+assert.strictEqual(kinds(S.diffLines('a\nb\nc\n', 'a\nB\nc\n')), ' a|-b|+B| c');
+assert.strictEqual(kinds(S.diffLines('a\nc', 'a\nb\nc')), ' a|+b| c');
+assert.strictEqual(kinds(S.diffLines('a\nb\nc', 'a\nc')), ' a|-b| c');
+assert.strictEqual(kinds(S.diffLines(null, 'x\ny\n')), '+x|+y');
+assert.strictEqual(kinds(S.diffLines('x\r\ny', null)), '-x|-y');
+assert.strictEqual(kinds(S.diffLines('', '')), '');
+assert.strictEqual(kinds(S.diffLines('1\n2\n3\n4', '0\n1\n3\n4\n5')), '+0| 1|-2| 3| 4|+5');
+const big = S.diffLines(files['cases/expense-over-limit-approval.md'], files['cases/expense-over-limit-approval.md'].replace('$600', '$700'));
+assert.strictEqual(big.filter(l => l.type !== 'same').length, 2);
+console.log('diff ok');
