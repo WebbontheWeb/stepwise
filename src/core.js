@@ -57,6 +57,17 @@
    * come back in `extra` as their original lines, with any indented or list lines under them, so
    * they can be written back unchanged.
    */
+  // A value without its trailing "# comment" (YAML only counts # as a comment after a space, and
+  // never inside quotes).
+  function stripComment(v) {
+    v = v.trim();
+    if (/^["']/.test(v)) {
+      const q = v.match(/^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*')/);
+      return q ? q[1] : v;
+    }
+    return v.replace(/(^|\s+)#.*$/, '').trim();
+  }
+
   function splitFrontmatter(text, known) {
     text = String(text).replace(/\r\n?/g, '\n');
     const m = text.match(/^---\n([\s\S]*?)\n---[ \t]*(?:\n|$)/);
@@ -64,20 +75,30 @@
     const meta = {};
     const extra = [];
     let keepingLines = false;
+    let listKey = null; // a list written YAML's block way: "tags:" and then "  - a" lines
     for (const line of m[1].split('\n')) {
       const isKey = /^[A-Za-z_][\w.-]*\s*:/.test(line);
       if (!isKey) {
-        if (keepingLines && line.trim()) extra.push(line);
+        const item = listKey && line.match(/^\s*-\s+(.*)$/);
+        if (item) {
+          const v = unquote(stripComment(item[1]));
+          if (v) meta[listKey].push(v);
+        } else if (keepingLines && line.trim()) {
+          extra.push(line);
+        }
         continue;
       }
       const i = line.indexOf(':');
       const key = line.slice(0, i).trim();
+      listKey = null;
       keepingLines = known && !known.has(key);
       if (keepingLines) { extra.push(line); continue; }
-      let value = line.slice(i + 1).trim();
+      let value = stripComment(line.slice(i + 1));
       if (LIST_FIELDS.has(key)) {
         value = value.replace(/^\[/, '').replace(/\]$/, '');
-        meta[key] = value ? value.split(',').map(s => unquote(s.trim())).filter(Boolean) : [];
+        // Split on commas, except inside quotes ("approvals, managers" is one item).
+        meta[key] = (value.match(/\s*(?:"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^,]+)/g) || []).map(s => unquote(s.trim())).filter(Boolean);
+        if (!value) listKey = key;
       } else {
         meta[key] = unquote(value);
       }

@@ -139,3 +139,15 @@ assert.strictEqual(W.transcriptName('  ', day), '2026-10-17-transcript');
 assert.match(W.transcriptName('x'.repeat(200), day), /^2026-10-17-x{60}$/);
 assert.strictEqual(W.transcriptFile('', 'a\r\nb\r\n\n', day), '# Test session\n\nNarrated test session, saved by Stepwise on 2026-10-17.\n\n---\n\na\nb\n');
 console.log('workspace files ok');
+
+// YAML block lists and trailing comments in frontmatter
+const yamlCase = S.parseCase('y', `---\ntitle: "Fix #12 # not a comment"\nado_id:      # filled in once it's in ADO\ntags:\n  - expenses\n  - "approvals, managers"\ntests:\n- 1201\n- 1202 # main story\nrelated: [a, b] # both ways\npriority: 1 # highest\n---\n\n## Steps\n\n1. Go \`#yy01\`\n`);
+assert.strictEqual(yamlCase.title, 'Fix #12 # not a comment');
+assert.strictEqual(yamlCase.ado_id, '');
+assert.deepStrictEqual(yamlCase.tags, ['expenses', 'approvals, managers']);
+assert.deepStrictEqual(yamlCase.tests, ['1201', '1202']);
+assert.deepStrictEqual(yamlCase.related, ['a', 'b']);
+assert.strictEqual(yamlCase.priority, '1');
+assert.deepStrictEqual(S.parseCase('y', S.writeCase(yamlCase, bt)).tags, yamlCase.tags);
+assert.strictEqual(S.parseCase('t', '---\ntitle: Pay invoice #1234\n---\n').title, 'Pay invoice'); // YAML: " #" starts a comment
+console.log('yaml lists ok');
