@@ -90,7 +90,8 @@ fn is_data(rel: &str) -> bool {
     let mut parts = rel.split('/');
     matches!(
         (parts.next(), parts.next(), parts.next()),
-        (Some("cases" | "blocks"), Some(name), None) if name.ends_with(".md") && !name.starts_with('.')
+        (Some("cases" | "blocks"), Some(name), None)
+            if name.ends_with(".md") && !name.starts_with('.') && !name.chars().any(char::is_control)
     )
 }
 
@@ -320,5 +321,6 @@ mod tests {
         assert!(!is_data("cases/.a.md.stepwise-tmp"));
         assert!(!is_data("cases/sub/a.md"));
         assert!(!is_data("AGENTS.md"));
+        assert!(!is_data("cases/x\rrm -rf ~.md"));
     }
 }

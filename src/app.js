@@ -1710,7 +1710,8 @@
     if (s.claude === false) return toast('Install Claude Code first, then choose Restart.');
     // A terminal that just started needs a moment for Claude Code to be ready for input.
     while (Date.now() - s.startedAt < 20000 && (Date.now() - s.startedAt < 2500 || Date.now() - s.lastOutput < 800)) await sleep(150);
-    await invoke('term_write', { id: s.id, data: text });
+    // Only printable text: a file name can't smuggle in a Return or other control keys.
+    await invoke('term_write', { id: s.id, data: text.replace(/[\u0000-\u001f\u007f-\u009f]/g, '') });
     // Return goes separately: arriving with the text, Claude Code would take it as part of a paste.
     if (enter) {
       await sleep(150);
