@@ -1,8 +1,9 @@
 # Stepwise
 
-A desktop editor for Azure DevOps manual test cases, with Claude Code built in. Test cases are plain
-Markdown files in a folder you choose, so Claude can read, audit and draft them, git can track them,
-and teammates can share them. Runs on macOS, Windows and Linux.
+A desktop editor for Azure DevOps manual test cases that works with your AI assistant. Test cases
+are plain Markdown files in a folder you choose, so Claude or Codex can read, review and draft them
+(including from a recording of you talking through a test session), git can track them, and
+teammates can share them. Runs on macOS, Windows and Linux.
 
 ## Install
 
@@ -38,11 +39,11 @@ The app ends up in `src-tauri/target/release/bundle/` (on macOS, `macos/Stepwise
 
 1. Open Stepwise. It starts with a sample project kept inside the app, so you can try things out.
 2. Click **Open folder** and pick (or create) a folder for your real test cases. Stepwise adds
-   `cases/`, `blocks/`, `stepwise.json`, and files that let Claude work on the cases with you (see
-   below). After that, every edit is saved to the files automatically.
+   `cases/`, `blocks/`, `stepwise.json`, and files that let an AI assistant work on the cases with
+   you (see below). After that, every edit is saved to the files automatically.
 
-If a file changes on disk while you have unsaved edits to it (Claude, a teammate or a sync service
-got there first), Stepwise doesn't overwrite it: it asks whether to keep your version or the one on
+If a file changes on disk while you have unsaved edits to it (an AI assistant, a teammate or a sync
+service got there first), Stepwise doesn't overwrite it: it asks whether to keep your version or the one on
 disk.
 
 ### Switching between folders
@@ -52,8 +53,9 @@ between the folders you've opened, for example one per client. Each folder remem
 had open, and Stepwise reopens the last folder when it starts. You can rename entries (handy when two
 folders share a name) or remove them from the list; removing never touches files.
 
-The list (and each folder's unreviewed changes, under `reviews/`) is saved in Stepwise's own
-settings folder, never in a repository or a test case folder:
+The list (and each folder's unreviewed changes, under `reviews/`, and your choice of AI assistant,
+in `settings.json`) is saved in Stepwise's own settings folder, never in a repository or a test case
+folder:
 
 | System | Settings folder |
 | --- | --- |
@@ -67,12 +69,12 @@ This repository contains only the app and fictional demo data. Your test cases n
 
 - **Real test cases** are saved only in the folder you open. Keep that folder somewhere else (its
   own private repo, a shared drive, or just your machine). `.gitignore` excludes `cases/`, `blocks/`,
-  `stepwise.json` and CSV exports just in case.
+  `transcripts/`, `stepwise.json` and CSV exports just in case.
 - **Demo mode** edits are kept in the app's local storage, not in any file.
 - **Your list of folders** is kept in Stepwise's settings folder (above).
 - **Stepwise itself makes no network calls.** No analytics, no CDNs, no uploads. Links to ADO open
-  in your browser only when you click them, using the project URL you set. Claude Code, when you use
-  it, talks to Anthropic as it always does.
+  in your browser only when you click them, using the project URL you set. Work with AI opens your
+  own Claude or Codex app, which talks to Anthropic or OpenAI as it always does.
 - **Demo data** (`src/sample.js`) is a made-up expense-report app ("Expense Hub").
 
 ## Writing steps
@@ -121,47 +123,84 @@ the edges, so the Export tab and Copy next stay one click away.
 After the first import, put the ADO ID into the case so later CSVs update it instead of creating
 a duplicate.
 
-## Working with Claude
+## Working with AI
 
-Claude Code runs in a panel inside Stepwise, right in your test case folder. It's the real Claude
-Code, using **your own Claude Code login** (your Claude subscription or API account), so install it
-first: see [Set up Claude Code](https://code.claude.com/docs/en/setup). Stepwise doesn't sign in to
-anything itself.
+Stepwise doesn't run an AI assistant itself. **Work with AI** in the top bar opens your test case
+folder in the assistant you already use, signed in to **your own account and subscription**:
 
-Open the panel with **Work with Claude** in the top bar or **⌘J** (Ctrl+J). It starts your usual
-shell in the folder and runs `claude` there, so if you quit Claude Code you're still in a terminal
-in the right place. Each folder gets its own terminal, which keeps running while you switch folders.
-Drag the panel's top edge to resize it. The buttons in its header type a command for you:
+| Assistant (Settings → AI assistant) | Opens | Link it uses |
+| --- | --- | --- |
+| **Claude (desktop app)** | A new Claude Code session in the Claude app. Claude asks you to confirm the folder. | `claude://code/new?folder=…&q=…` |
+| **Claude Code (terminal)** | A new terminal window running `claude` in the folder. | `claude-cli://open?cwd=…&q=…` |
+| **Codex** | A new chat in the Codex app, in the folder. | `codex://new?path=…&prompt=…` |
 
-- **Review this case**: `/audit cases/<case>.md`
-- **Review all cases**: `/audit`
-- **Draft cases from a user story**: types `/draft-case ` so you can paste the story, then press Return
-- **Find steps worth reusing**: `/find-blocks`
-- **Restart**: ends the terminal and starts a fresh one
+The choice is kept in Stepwise's settings folder, not in your test case folder. From the same dialog
+you can start with a prompt already typed in. Nothing is sent until you read it and send it:
 
-The Checks tab has a **Review this case with Claude** button too.
+- **Review this case** and **Review all cases**: checks steps, expected results, preconditions and
+  coverage, then asks which fixes to make. The Checks tab has a **Review this case with AI** button.
+- **Draft cases from a user story**: paste the story after the prompt.
+- **Find steps worth reusing**: repeated steps that could become blocks.
+- **New cases from transcript**: see below.
 
-### Reviewing Claude's changes
+Each prompt is one line that points at a workflow in the folder's `AGENTS.md`, so Claude and Codex
+follow the same steps and the prompt fits in a link.
 
-Stepwise watches `cases/`, `blocks/` and `stepwise.json`. When Claude (or a teammate, or git) changes
-a file, Stepwise reloads it straight away, marks it **updated** in the sidebar, and lists it under
-**Changes from Claude**. There you see each file's changes line by line and choose **Keep** or
+If the assistant isn't installed, Stepwise says so and links to where to get it. Claude Code's
+`claude-cli://` links work once you've run `claude` in a terminal and sent it a message: that's when
+Claude Code registers them.
+
+### New cases from a transcript
+
+Narrate what you do and see while you test on a device, record it, and get a transcript (any
+recorder or dictation app). Then choose **Work with AI** → **New cases from transcript**, give the
+session a title, and paste the transcript or drop the text file (`.txt`, `.md`, `.vtt`, `.srt`) on
+the box. Stepwise saves it as `transcripts/<date>-<title>.md` in the test case folder (never
+replacing an earlier one) and opens the assistant with a prompt pointing at that file. A long
+transcript wouldn't fit in a link, and the file keeps a record of the session.
+
+The assistant follows the "Cases from a transcript" workflow in `AGENTS.md`: it splits the session
+into cases in Stepwise's format, reuses your blocks, uses repeat steps where you repeated a sequence,
+sets `state: Design`, never invents an expected result (it writes `Expected: TODO: what should
+happen?` instead), and lists its open questions. It shows you the plan before writing any files.
+
+### Which links were checked where
+
+| | macOS | Windows | Linux |
+| --- | --- | --- | --- |
+| Claude (desktop app) | Checked (Claude 2.42304): opens a session in the folder after you confirm it | Supported by Claude, not tested | Supported by Claude, not tested |
+| Claude Code (terminal) | Checked (Claude Code 2.1.302): Terminal opens with `claude` in the folder and the prompt passed in, after its folder-trust question | Supported by Claude Code, not tested | Supported by Claude Code, not tested |
+| Codex | Opens the Codex app (inside ChatGPT 26.1013); folder and prompt not checked on screen | Codex app exists, not tested | No Codex app yet: Stepwise says so |
+
+On Windows and Linux Stepwise first checks that something handles the link (the registry, or
+`xdg-mime`), so a missing app gives a message instead of nothing happening.
+
+### Reviewing outside changes
+
+Stepwise watches `cases/`, `blocks/` and `stepwise.json`. When an AI assistant, a teammate or git
+changes a file, Stepwise reloads it straight away, marks it **updated** in the sidebar, and lists it
+under **Outside changes**. There you see each file's changes line by line and choose **Keep** or
 **Undo** (or **Keep all** / **Undo all**). Undo puts the file back as it was: it rewrites a changed
 file, deletes a new one, or restores a deleted one. Editing a changed file in Stepwise keeps its
 change. Changes waiting for review are kept per folder, so they're still there after you switch
-folders (including changes Claude makes in a folder you've switched away from) or restart Stepwise.
+folders (including changes made in a folder you've switched away from) or restart Stepwise.
 
 ### What Stepwise adds to a folder
 
-- `AGENTS.md`: the file format, rules for writing good test cases, and how to work in the folder.
-  Other AI coding tools read this file too.
+- `AGENTS.md`: the file format, rules for writing good test cases, how to work in the folder, and
+  the workflows the prompts use (review cases, draft cases from a user story, find steps worth
+  reusing, cases from a transcript). Claude Code, Codex and other AI tools read this file.
 - `CLAUDE.md`: a one-line pointer so Claude Code loads `AGENTS.md`.
-- `.claude/commands/`: `/audit` (review cases and suggest fixes), `/draft-case` (turn a user story
-  into cases) and `/find-blocks` (spot repeated steps that should be blocks).
+- `.claude/commands/`: `/audit`, `/draft-case`, `/find-blocks` and `/from-transcript`, which run those
+  workflows when you type them in Claude Code.
+- `transcripts/`: only when you save a transcript.
 
 Setting up a new folder adds them; for a folder that already has test cases, Stepwise asks once and
-remembers your answer. It only ever adds missing files and doesn't put back ones you delete, so you
-can edit or remove them to suit your team. Settings has a link to add them later.
+remembers your answer. It doesn't put back files you delete, so you can edit or remove them to suit
+your team. When a new version of Stepwise changes these files, it offers the update once: files it
+wrote that nobody edited are replaced, an edited `AGENTS.md` keeps your text and gets the new
+workflows added at the end, and anything else is left alone. Settings has a link to add or update
+them at any time.
 
 The **Checks** tab catches structural problems (missing expected results, broken references,
 duplicate titles) as you type.
@@ -181,10 +220,9 @@ duplicate titles) as you type.
 | `src/index.html`, `src/styles.css`, `src/app.js` | The app's window |
 | `src/core.js` | File format, export, checks and diffs (no UI) |
 | `src/sample.js` | Fictional demo data |
-| `src/workspace.js` | The AGENTS.md, CLAUDE.md and commands added to test case folders |
-| `src-tauri/` | The desktop app (Tauri): files, folder list, file watching and the terminal |
-| `scripts/vendor.mjs` | Copies xterm.js into `src/vendor/` before each build |
-| `test.js` | `node test.js` runs the format and export tests |
+| `src/workspace.js` | The AGENTS.md, CLAUDE.md and commands added to test case folders, and the Work with AI prompts |
+| `src-tauri/` | The desktop app (Tauri): files, folder list, file watching, settings and opening the AI assistant |
+| `test.js` | `node test.js` runs the format, export and workspace file tests; `cargo test` in `src-tauri/` runs the backend's |
 | `.github/workflows/` | CI, and release builds for macOS, Windows and Linux |
 
 ## License
