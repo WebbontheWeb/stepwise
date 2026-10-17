@@ -1425,8 +1425,10 @@
         h('button', { class: 'link t', type: 'button', onclick: () => select({ kind: item.kind, id: item.id }) }, item.title || 'Untitled'),
         h('span', { class: 'count' }, issues.length)))
         : h('p', { class: 'allgood' }, icon('check'), 'Nothing else to fix'),
-      h('p', { class: 'help', style: 'margin-top:14px' }, 'These checks catch structural problems. For a review of the content itself, ',
-        h('button', { class: 'link', type: 'button', onclick: claudeDialog }, 'run /audit in Claude Code'), '.'));
+      h('p', { class: 'help', style: 'margin-top:14px' }, 'These checks catch structural problems. For a review of the content itself, ask Claude.'),
+      except && except.kind === 'case' ? h('button', {
+        class: 'btn small', type: 'button', onclick: () => openClaude(`/audit cases/${except.id}.md`),
+      }, icon('sparkle'), 'Review this case with Claude') : null);
   }
 
   function jumpToStep(id) {
@@ -1536,7 +1538,7 @@
 
   // ---------- dialogs ----------
 
-  function ask({ title, body, input, extra, buttons }) {
+  function ask({ title, body, input, extra, buttons, validate }) {
     return new Promise(resolve => {
       const d = $('#dialog');
       let inp = null;
@@ -1550,7 +1552,7 @@
       if (input) inp = h('input', { class: 'field', value: input.value || '', placeholder: input.placeholder || '' });
       const primary = buttons.find(b => b.primary);
       const form = h('form', {
-        class: 'dlg', onsubmit(e) { e.preventDefault(); if (primary) finish(primary.value); },
+        class: 'dlg', onsubmit(e) { e.preventDefault(); if (primary && (!validate || validate(inp ? inp.value : ''))) finish(primary.value); },
       },
         h('h2', {}, title),
         body ? (typeof body === 'string' ? h('p', {}, body) : body) : null,
@@ -1561,6 +1563,8 @@
         }, b.label))));
       d.replaceChildren(form);
       d.oncancel = e => { e.preventDefault(); finish(null); };
+      // A close event left over from the previous dialog can arrive after this one opens; only react if it's really closed.
+      d.onclose = () => { if (!d.open) finish(null); };
       d.showModal();
       (inp || form.querySelector('.btn.primary'))?.focus();
     });
@@ -1603,27 +1607,99 @@
     toast(`Exported ${plural(cases.length, 'test case')}`);
   }
 
-  function claudeDialog() {
-    const cmd = (name, what) => h('li', {}, h('code', {}, name), ` ${what}`);
-    const body = state.mode === 'folder'
-      ? h('div', {},
-          h('p', {}, `“${state.dir.name}” is set up for Claude: its AGENTS.md explains the file format and how to write good test cases, and it has a few commands ready to use.`),
-          h('ol', { class: 'steps-how' },
-            h('li', {}, 'Open the folder in Claude Code: in the Claude desktop app, choose ', h('b', {}, 'Code'), ' and pick this folder, or run ', h('code', {}, 'claude'), ' in a terminal from inside it.'),
-            h('li', {}, 'Ask for what you need, or use a command:',
-              h('ul', {},
-                cmd('/audit', 'reviews cases and suggests fixes'),
-                cmd('/draft-case', 'turns a user story into new cases'),
-                cmd('/find-blocks', 'spots repeated steps that should be blocks'))),
-            h('li', {}, 'Come back here. Stepwise reloads what Claude changed and marks those cases as updated.')))
-      : h('div', {},
-          h('p', {}, 'Claude works directly on your test case files, so open a folder first. Stepwise adds an AGENTS.md that explains the format, plus /audit, /draft-case and /find-blocks commands for Claude Code.'));
-    return ask({
+  // ---------- Claude Code ----------
+  // Claude Code registers claude-cli://open?cwd=<folder>&q=<prompt>, which opens it in a terminal in that
+  // folder with the prompt typed in (you press Return). Pages can't see a folder's full path, so you paste
+  // it once; it's kept with the folder list in browser storage, never in a file.
+
+  function claudeLink(path, q) {
+    return `claude-cli://open?cwd=${encodeURIComponent(path)}${q ? `&q=${encodeURIComponent(q)}` : ''}`;
+  }
+
+  function launch(url) {
+    const a = h('a', { href: url });
+    document.body.append(a);
+    a.click();
+    a.remove();
+  }
+
+  // Opens Claude Code in the current folder, asking for the folder's path the first time.
+  function openClaude(q) {
+    const path = state.mode === 'folder' && state.current && state.current.path;
+    if (path) {
+      launch(claudeLink(path, q));
+      toast('Opening Claude Code…');
+    } else {
+      claudeDialog();
+    }
+  }
+
+  function checkPath(text, name) {
+    const path = text.trim().replace(/^['"]|['"]$/g, '').replace(/\/+$/, '');
+    if (!path.startsWith('/')) return { error: 'Paste the full path, starting with /.' };
+    if (path.split('/').includes('..')) return { error: 'The path can’t contain “..”.' };
+    if (path.split('/').pop() !== name) return { error: `That path ends in “${path.split('/').pop()}”, but this folder is called “${name}”.` };
+    return { path };
+  }
+
+  async function claudeDialog() {
+    if (state.mode !== 'folder') {
+      const r = await ask({
+        title: 'Work on test cases with Claude',
+        body: 'Claude works directly on your test case files, so open a folder first. Stepwise adds an AGENTS.md that explains the format, plus /audit, /draft-case and /find-blocks commands for Claude Code.',
+        buttons: [{ label: 'Close' }, ...(canPickFolder ? [{ label: 'Open folder', value: 'open', primary: true }] : [])],
+      });
+      if (r === 'open') openFolder();
+      return;
+    }
+    if (!state.current) await rememberFolder(state.dir);
+    const entry = state.current;
+    const name = state.dir.name;
+
+    if (!entry.path) {
+      const err = h('p', { class: 'field-error', role: 'alert' });
+      const r = await ask({
+        title: 'Connect Claude Code to this folder',
+        body: h('div', {},
+          h('p', {}, `To open Claude Code right in “${name}”, Stepwise needs the folder’s full path. Browsers keep that hidden, so paste it once and Stepwise remembers it.`),
+          h('p', { class: 'help' }, 'In Finder, right-click the folder, hold ', h('kbd', {}, '⌥ Option'), ' and choose ', h('b', {}, `Copy “${name}” as Pathname`), '.')),
+        input: { placeholder: `/Users/you/…/${name}` },
+        extra: err,
+        buttons: [{ label: 'Cancel' }, { label: 'Save path', value: 'ok', primary: true }],
+        validate(text) {
+          const res = checkPath(text, name);
+          err.textContent = res.error || '';
+          return !res.error;
+        },
+      });
+      if (!r) return;
+      entry.path = checkPath(r.text, name).path;
+      await saveFolders();
+      return claudeDialog();
+    }
+
+    const cur = currentItem();
+    const action = (label, sub, q, primary) => h('a', {
+      class: primary ? 'claude-action primary' : 'claude-action', href: claudeLink(entry.path, q),
+      onclick() { setTimeout(() => $('#dialog').close(), 0); toast('Opening Claude Code…'); },
+    }, h('span', { class: 'ca-label' }, label), sub ? h('span', { class: 'ca-sub' }, sub) : null);
+    const terminal = `cd ${JSON.stringify(entry.path)} && claude`;
+    await ask({
       title: 'Work on test cases with Claude',
-      body,
-      buttons: state.mode === 'folder' ? [{ label: 'Done', value: 'ok', primary: true }]
-        : [{ label: 'Close' }, ...(canPickFolder ? [{ label: 'Open folder', value: 'open', primary: true }] : [])],
-    }).then(r => { if (r === 'open') openFolder(); });
+      body: h('div', {},
+        h('div', { class: 'claude-actions' },
+          action('Open Claude Code here', `Starts in “${folderLabel(entry)}”`, '', true),
+          cur && cur.kind === 'case' ? action('Review this case', cur.title || cur.id, `/audit cases/${cur.id}.md`) : null,
+          action('Review all cases', 'Clarity, gaps and duplicates', '/audit'),
+          action('Draft cases from a user story', 'Type /draft-case, then paste the story', '/draft-case'),
+          action('Find steps worth reusing', 'Suggests new step blocks', '/find-blocks')),
+        h('p', { class: 'help' }, 'Claude Code opens in your terminal with the command typed in; press Return to run it. Stepwise reloads whatever Claude changes and marks those cases as updated.'),
+        h('p', { class: 'help' },
+          h('button', { class: 'link', type: 'button', async onclick() { if (await copyText(terminal)) toast('Copied. Paste it into a terminal.'); } }, 'Copy terminal command'),
+          ' · ',
+          h('button', { class: 'link', type: 'button', onclick() { entry.path = ''; saveFolders(); $('#dialog').close(); claudeDialog(); } }, 'Change folder path'))),
+      buttons: [{ label: 'Close', value: 'ok', primary: true }],
+    });
   }
 
   async function settingsDialog() {

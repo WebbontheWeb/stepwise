@@ -105,9 +105,16 @@ sets up a folder it adds:
 
 Stepwise only adds these files if they're missing, so you can edit them to suit your team.
 
-Open the folder in Claude Code (the Claude desktop app's Code tab, or `claude` in a terminal), ask
-for what you need, then switch back: Stepwise reloads changed files and marks those cases as
-**updated** in the sidebar. **Work with Claude** in the top bar shows these steps.
+**Work with Claude** in the top bar opens Claude Code in your terminal, already in the test case
+folder, with one click: open it plain, or start with **Review this case**, **Review all cases**,
+**Draft cases from a user story** or **Find steps worth reusing** (the command is typed in; press
+Return). The Checks tab has a **Review this case with Claude** button too. Switch back when Claude
+is done: Stepwise reloads changed files and marks those cases as **updated** in the sidebar.
+
+The first time, Stepwise asks for the folder's full path, because browsers don't reveal it (in
+Finder, right-click the folder, hold Option and choose *Copy as Pathname*). It's remembered with
+your folder list in browser storage, never in a file. This uses Claude Code's `claude-cli://` link,
+which Claude Code sets up when it's installed; **Copy terminal command** is there as a fallback.
 
 The **Checks** tab catches structural problems (missing expected results, broken references,
 duplicate titles) as you type.
