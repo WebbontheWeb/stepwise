@@ -1637,6 +1637,7 @@
   function checkPath(text, name) {
     const path = text.trim().replace(/^['"]|['"]$/g, '').replace(/\/+$/, '');
     if (!path.startsWith('/')) return { error: 'Paste the full path, starting with /.' };
+    if (/[\u0000-\u001f]/.test(path)) return { error: 'The path can’t contain line breaks or control characters.' };
     if (path.split('/').includes('..')) return { error: 'The path can’t contain “..”.' };
     if (path.split('/').pop() !== name) return { error: `That path ends in “${path.split('/').pop()}”, but this folder is called “${name}”.` };
     return { path };
@@ -1683,7 +1684,8 @@
       class: primary ? 'claude-action primary' : 'claude-action', href: claudeLink(entry.path, q),
       onclick() { setTimeout(() => $('#dialog').close(), 0); toast('Opening Claude Code…'); },
     }, h('span', { class: 'ca-label' }, label), sub ? h('span', { class: 'ca-sub' }, sub) : null);
-    const terminal = `cd ${JSON.stringify(entry.path)} && claude`;
+    // Single quotes so the shell treats the path literally (no $, ` or \ expansion).
+    const terminal = `cd '${entry.path.replace(/'/g, `'\\''`)}' && claude`;
     await ask({
       title: 'Work on test cases with Claude',
       body: h('div', {},
