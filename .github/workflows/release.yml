@@ -10,9 +10,39 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
+  # One draft release for the version in package.json, made before the builds start, so the
+  # parallel builds all upload to it instead of each creating their own.
+  create-release:
+    name: Create the draft release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      id: ${{ steps.release.outputs.id }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="v$(node -p "require('./package.json').version")"
+          id=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq ".[] | select(.tag_name == \"$tag\") | .id" | head -n 1)
+          if [ -z "$id" ]; then
+            body="Download the installer for your computer below. These builds aren't code-signed yet, so the first launch needs an extra step: see \"Install\" in the README."
+            id=$(gh api "repos/$GITHUB_REPOSITORY/releases" -f tag_name="$tag" -f target_commitish="$GITHUB_SHA" \
+              -f name="Stepwise $tag" -f body="$body" -F draft=true --jq .id)
+          fi
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build (${{ matrix.name }})
+    needs: create-release
     permissions:
       contents: write
     strategy:
@@ -34,6 +64,8 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -52,11 +84,5 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: v__VERSION__
-          releaseName: Stepwise v__VERSION__
-          releaseBody: |
-            Download the installer for your computer below. These builds aren't code-signed yet, so
-            the first launch needs an extra step: see "Install" in the README.
-          releaseDraft: true
-          prerelease: false
+          releaseId: ${{ needs.create-release.outputs.id }}
           args: ${{ matrix.args }}
