@@ -201,7 +201,15 @@
     scheduleLive();
   }
 
-  async function flush() {
+  // One save at a time: an overlapping save would send an out-of-date base text and take its own
+  // earlier write for an outside change.
+  let saving = Promise.resolve();
+  function flush() {
+    saving = saving.then(flushNow, flushNow);
+    return saving;
+  }
+
+  async function flushNow() {
     clearTimeout(state.saveTimer);
     const keys = [...state.dirty];
     const deleted = [...state.deleted];
@@ -240,7 +248,7 @@
       LS.set('sw.demo', allFiles());
     }
     // Edits that couldn't be saved stay unsaved and are tried again shortly.
-    if (failed) state.saveTimer = setTimeout(flush, 5000);
+    if (failed) retryLater();
     setSave(failed ? 'error' : state.conflicts.size ? 'conflict' : state.dirty.size ? 'pending' : 'saved');
     const count = Object.keys(P().cases).length;
     if (state.mode === 'folder' && state.current && state.current.cases !== count) { state.current.cases = count; saveFolders(); }
@@ -339,13 +347,36 @@
     return true;
   }
 
-  // Before switching folders: save, and settle any conflicts. False if one is still open.
-  async function settle() {
+  // Before switching folders or quitting: save, settle any conflicts, and ask before dropping edits
+  // that couldn't be saved. False means stay.
+  async function settle(verb = 'switch') {
     await flush();
     if (state.conflicts.size) await resolveConflicts();
-    if (!state.conflicts.size) return true;
-    toast('Choose which version to keep first.');
-    return false;
+    if (state.conflicts.size) {
+      toast('Choose which version to keep first.');
+      return false;
+    }
+    if (!state.dirty.size && !state.deleted.size) return true;
+    clearTimeout(state.saveTimer); // no retries while you decide
+    const r = await ask({
+      title: 'Some changes couldn’t be saved',
+      body: `Stepwise couldn’t write them to the folder. If you ${verb} now, they’re lost.`,
+      buttons: [{ label: `Don’t ${verb}` }, { label: `${verb[0].toUpperCase()}${verb.slice(1)} anyway`, value: 'go', primary: true }],
+    });
+    if (!r) retryLater();
+    return !!r;
+  }
+
+  const retryLater = () => {
+    clearTimeout(state.saveTimer);
+    if (state.dirty.size || state.deleted.size) state.saveTimer = setTimeout(flush, 5000);
+  };
+
+  // Unsaved edits belong to the folder you're leaving: never write them into the next one.
+  function dropUnsaved() {
+    clearTimeout(state.saveTimer);
+    state.dirty.clear();
+    state.deleted.clear();
   }
 
   // ---------- opening folders ----------
@@ -379,8 +410,10 @@
     try {
       opened = await invoke('open_workspace', { path: info.path, setup: !info.setUp });
     } catch (e) {
+      retryLater(); // still in the same folder, so keep trying to save its edits
       return failed(e);
     }
+    dropUnsaved();
     // Remember how the folder you're leaving looked, to show what changes there meanwhile.
     if (state.mode === 'folder' && state.root !== opened.path) state.away.set(state.root, state.disk);
     state.mode = 'folder';
@@ -490,6 +523,7 @@
     setMenu(false);
     if (state.mode === 'demo') return;
     if (!(await settle())) return;
+    dropUnsaved();
     await invoke('close_workspace');
     state.away.set(state.root, state.disk);
     Object.assign(state, { mode: 'demo', root: null, current: null, disk: {}, review: new Map() });
@@ -2212,16 +2246,7 @@
   // Closing the window waits for the last edits to be saved, and for you to settle any conflict.
   listen('close-requested', async () => {
     invoke('hold_close');
-    if (!(await settle())) return;
-    if (state.dirty.size || state.deleted.size) {
-      const r = await ask({
-        title: 'Some changes couldn’t be saved',
-        body: 'Stepwise couldn’t write them to the folder. If you quit now, they’re lost.',
-        buttons: [{ label: 'Don’t quit' }, { label: 'Quit anyway', value: 'quit', primary: true }],
-      });
-      if (!r) return;
-    }
-    invoke('quit');
+    if (await settle('quit')) invoke('quit');
   });
   document.addEventListener('keydown', e => {
     if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); flush(); }
