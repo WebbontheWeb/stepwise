@@ -22,6 +22,9 @@ pub struct Folder {
     /// The ADO project, e.g. "contoso / expenses".
     #[serde(default)]
     ado: String,
+    /// Whether you agreed to add AGENTS.md, CLAUDE.md and the commands; unset until asked.
+    #[serde(default, rename = "claudeFiles", skip_serializing_if = "Option::is_none")]
+    claude_files: Option<bool>,
 }
 
 fn file(app: &AppHandle) -> Result<PathBuf, String> {

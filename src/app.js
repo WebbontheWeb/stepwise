@@ -393,10 +393,9 @@
           opened.files[p] = text;
         }
       }
-      await ensureWorkspace();
     } catch (e) {
       console.error(e);
-      toast(`Couldn't add Stepwise's files to the folder: ${e}`);
+      toast(`Couldn't add the sample cases: ${e}`);
     }
     state.project = loadFiles(opened.files);
     state.picked.clear();
@@ -404,6 +403,8 @@
     saveReview();
     LS.set('sw.mode', 'folder');
     await rememberFolder(opened.path);
+    // Setting up a new folder (which says it adds these) counts as a yes.
+    await offerClaudeFiles(state.current, !info.setUp && !opts.entry);
     // Come back to the case you were on in this folder.
     const last = state.current && state.current.sel;
     state.sel = last;
@@ -550,13 +551,47 @@
     menu.style.left = `${Math.max(8, Math.min(r.left, innerWidth - menu.offsetWidth - 8))}px`;
   }
 
-  // Make the folder a workspace Claude (and other agents) can work in. Only writes missing files.
-  async function ensureWorkspace() {
-    const W = window.StepwiseWorkspace;
-    for (const [path, text] of Object.entries(W.files)) {
-      const existing = await readText(path);
-      if (existing == null || (path === 'CLAUDE.md' && W.isOldClaudeMd(existing))) await writeFile(path, text);
+  // AGENTS.md, CLAUDE.md and the commands let Claude (and other agents) work in the folder.
+  // Stepwise adds them only with your OK, asked once per folder, and never puts back ones you
+  // deleted. Only missing files are written.
+  async function offerClaudeFiles(entry, agreed) {
+    if (!entry || entry.claudeFiles != null) return;
+    const missing = [];
+    for (const path of Object.keys(window.StepwiseWorkspace.files)) if ((await readText(path).catch(() => null)) == null) missing.push(path);
+    if (!missing.length) {
+      entry.claudeFiles = true;
+      return saveFolders();
     }
+    if (!agreed) {
+      const r = await ask({
+        title: 'Help Claude work in this folder?',
+        body: h('div', {},
+          h('p', {}, 'Stepwise can add these files, which tell Claude Code how test cases are written here and add the /audit, /draft-case and /find-blocks commands:'),
+          h('ul', { class: 'file-list' }, missing.map(p => h('li', {}, h('code', {}, p)))),
+          h('p', { class: 'help' }, 'Nothing else in the folder changes. You can add them later in Settings.')),
+        buttons: [{ label: 'Don’t add', value: 'no' }, { label: 'Add files', value: 'yes', primary: true }],
+      });
+      if (!r) return; // closed without answering: ask again next time
+      agreed = r === 'yes';
+    }
+    entry.claudeFiles = agreed;
+    saveFolders();
+    if (agreed) await addClaudeFiles();
+  }
+
+  async function addClaudeFiles() {
+    const W = window.StepwiseWorkspace;
+    let added = 0;
+    try {
+      for (const [path, text] of Object.entries(W.files)) {
+        const existing = await readText(path);
+        if (existing == null || (path === 'CLAUDE.md' && W.isOldClaudeMd(existing))) { await writeFile(path, text); added++; }
+      }
+    } catch (e) {
+      console.error(e);
+      toast(`Couldn't add the files for Claude: ${e}`);
+    }
+    return added;
   }
 
   // ---------- changes made outside the app ----------
@@ -2148,9 +2183,19 @@
     const url = h('input', { class: 'field', value: P().settings.adoBaseUrl || '', placeholder: 'https://dev.azure.com/your-org/your-project' });
     const buttons = [{ label: 'Cancel' }, { label: 'Save', value: 'ok', primary: true }];
     if (state.mode === 'demo') buttons.unshift({ label: 'Reset demo data', value: 'reset' });
+    const addFiles = state.mode === 'folder' ? h('p', { class: 'help' },
+      h('button', {
+        class: 'link', type: 'button',
+        async onclick() {
+          $('#dialog').close();
+          const n = await addClaudeFiles();
+          if (state.current) { state.current.claudeFiles = true; saveFolders(); }
+          toast(n ? `Added ${plural(n, 'file')} for Claude` : 'The files for Claude are all there already');
+        },
+      }, 'Add the files Claude Code uses'), ' (AGENTS.md, CLAUDE.md and the /audit, /draft-case and /find-blocks commands) where they’re missing.') : null;
     const r = await ask({
       title: 'Settings',
-      body: h('p', {}, 'Your Azure DevOps project URL. Used to make work item IDs clickable. Saved in stepwise.json.'),
+      body: h('div', {}, h('p', {}, 'Your Azure DevOps project URL. Used to make work item IDs clickable. Saved in stepwise.json.'), addFiles),
       extra: [h('span', { class: 'lbl' }, 'ADO project URL'), url],
       buttons,
     });
