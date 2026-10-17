@@ -35,6 +35,8 @@
     check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
     target: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.5"/>',
     menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+    chevdown: '<path d="m7 10 5 5 5-5"/>',
+    pencil: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>',
     panel: '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M14.5 4.5v15"/>',
     grip: '<circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/>',
   };
@@ -86,7 +88,8 @@
     project: S.createProject(),
     mode: 'demo',
     dir: null,
-    lastHandle: null,
+    folders: [],
+    current: null,
     sel: null,
     tab: LS.get('sw.tab', 'links'),
     expanded: new Set(),
@@ -261,7 +264,7 @@
 
   // ---------- opening folders ----------
 
-  async function openFolder(handle) {
+  async function openFolder(handle, opts = {}) {
     if (!handle) {
       try {
         handle = await window.showDirectoryPicker({ id: 'stepwise', mode: 'readwrite' });
@@ -294,8 +297,8 @@
     let found;
     try {
       found = await readFolder();
-      const hasContent = Object.keys(found).some(p => p !== 'stepwise.json');
-      if (!hasContent) {
+      // A folder counts as set up once it has stepwise.json or any cases or blocks, even if it's empty.
+      if (!Object.keys(found).length) {
         const choice = await ask({
           title: `Set up “${handle.name}” for Stepwise?`,
           body: 'This adds cases/ and blocks/ folders, a stepwise.json settings file, and an AGENTS.md, CLAUDE.md and a few commands so Claude can work on the test cases with you. Nothing already in the folder is changed.',
@@ -313,19 +316,137 @@
       await ensureWorkspace();
     } catch (e) {
       state.dir = prev.dir;
-      toast(`Couldn't read that folder: ${e.message}`);
+      toast(`Couldn't read that folder: ${e.message}`, opts.entry && { label: 'Remove from list', run: () => forgetFolder(opts.entry) });
       return;
     }
     state.mode = 'folder';
-    state.lastHandle = handle;
     state.project = loadFiles(Object.fromEntries(Object.entries(found).map(([p, v]) => [p, v.text])));
     state.mtimes = Object.fromEntries(Object.entries(found).map(([p, v]) => [p, v.mtime]));
     state.picked.clear();
-    idbSet('last', handle);
+    state.changed.clear();
+    LS.set('sw.mode', 'folder');
+    await rememberFolder(handle);
+    // Come back to the case you were on in this folder.
+    const last = state.current && state.current.sel;
+    state.sel = last;
+    if (!last || (last.kind !== 'coverage' && !currentItem())) selectFirst();
+    renderAll();
+    $('#main').scrollTop = 0;
+    setSave('saved');
+    toast(`Opened ${folderLabel(state.current)}`);
+  }
+
+  // ---------- remembered folders ----------
+  // Kept in the browser's IndexedDB (the only place a page can keep folder access), never in a file,
+  // so the list can't end up in this app's repository or a test case folder.
+
+  const folderLabel = f => (f ? f.label || f.handle.name : '');
+  function folderSub(f) {
+    const bits = [];
+    if (f.label && f.label !== f.handle.name) bits.push(f.handle.name);
+    bits.push(plural(f.cases || 0, 'case'));
+    if (f.ado) bits.push(f.ado);
+    return bits.join(' · ');
+  }
+  function adoLabel(url) {
+    const base = safeBaseUrl(url);
+    if (!base) return '';
+    const u = new URL(base);
+    const parts = u.pathname.split('/').filter(Boolean).map(decodeURIComponent);
+    return u.hostname === 'dev.azure.com' ? parts.join(' / ') : [u.hostname, ...parts].join(' / ');
+  }
+  const saveFolders = () => idbSet('folders', state.folders);
+
+  async function rememberFolder(handle) {
+    let entry = null;
+    for (const f of state.folders) {
+      try { if (await f.handle.isSameEntry(handle)) { entry = f; break; } } catch (e) { /* stale handle */ }
+    }
+    if (!entry) state.folders.push(entry = { handle, label: '', sel: null });
+    Object.assign(entry, { handle, cases: Object.keys(P().cases).length, ado: adoLabel(P().settings.adoBaseUrl), opened: Date.now() });
+    state.folders.sort((a, b) => b.opened - a.opened);
+    state.folders = state.folders.slice(0, 15);
+    state.current = entry;
+    await saveFolders();
+  }
+
+  function forgetFolder(f) {
+    state.folders = state.folders.filter(x => x !== f);
+    if (state.current === f) state.current = null;
+    saveFolders();
+    renderTop();
+    if ($('#switcher').matches(':popover-open')) renderSwitcher();
+  }
+
+  async function renameFolder(f) {
+    $('#switcher').hidePopover();
+    const r = await ask({
+      title: 'Rename in this list',
+      body: 'Only changes the name Stepwise shows. The folder on disk keeps its name.',
+      input: { value: folderLabel(f) },
+      buttons: [{ label: 'Cancel' }, { label: 'Rename', value: 'ok', primary: true }],
+    });
+    if (!r) return;
+    const text = r.text.trim();
+    f.label = text && text !== f.handle.name ? text : '';
+    saveFolders();
+    renderTop();
+  }
+
+  function switchTo(f) {
+    $('#switcher').hidePopover();
+    if (state.mode === 'folder' && f === state.current) return;
+    openFolder(f.handle, { entry: f });
+  }
+
+  async function switchToDemo() {
+    $('#switcher').hidePopover();
+    if (state.mode === 'demo') return;
+    await flush();
+    Object.assign(state, { mode: 'demo', dir: null, current: null, mtimes: {} });
+    state.changed.clear();
+    state.picked.clear();
+    state.project = loadFiles(LS.get('sw.demo', null) || window.StepwiseSample);
+    LS.set('sw.mode', 'demo');
     selectFirst();
     renderAll();
     setSave('saved');
-    toast(`Opened ${handle.name}`);
+  }
+
+  function renderSwitcher() {
+    const menu = $('#switcher');
+    const check = on => h('span', { class: 'mi-check' }, on ? icon('check') : null);
+    const text = (name, sub) => h('span', { class: 'mi-text' }, h('span', { class: 'mi-name' }, name), sub ? h('span', { class: 'mi-sub' }, sub) : null);
+    const rows = state.folders.map(f => {
+      const current = state.mode === 'folder' && f === state.current;
+      return h('div', { class: 'menu-row' },
+        h('button', { class: 'menu-item', type: 'button', 'aria-current': current ? 'true' : null, onclick: () => switchTo(f) },
+          check(current), text(folderLabel(f), folderSub(f))),
+        iconBtn('pencil', `Rename ${folderLabel(f)}`, () => renameFolder(f)),
+        iconBtn('x', `Remove ${folderLabel(f)} from this list`, () => forgetFolder(f)));
+    });
+    menu.replaceChildren(...[
+      h('div', { class: 'menu-head' }, 'Your folders'),
+      ...(rows.length ? rows : [h('p', { class: 'menu-note' }, 'Folders you open show up here, so you can switch between them.')]),
+      h('div', { class: 'menu-sep' }),
+      h('button', {
+        class: 'menu-item', type: 'button', disabled: !canPickFolder,
+        title: canPickFolder ? null : 'Opening folders needs Chrome or Edge',
+        onclick() { menu.hidePopover(); openFolder(); },
+      }, h('span', { class: 'mi-check' }, icon('plus')), text('Open another folder…')),
+      h('button', { class: 'menu-item', type: 'button', 'aria-current': state.mode === 'demo' ? 'true' : null, onclick: switchToDemo },
+        check(state.mode === 'demo'), text('Sample project', 'Demo data, saved in this browser')),
+      h('p', { class: 'menu-note foot' }, 'This list is remembered by your browser, not saved in any file.'),
+    ]);
+  }
+
+  function placeSwitcher() {
+    const menu = $('#switcher');
+    const btn = $('#top .proj');
+    if (!btn) return;
+    const r = btn.getBoundingClientRect();
+    menu.style.top = `${r.bottom + 6}px`;
+    menu.style.left = `${Math.max(8, Math.min(r.left, innerWidth - menu.offsetWidth - 8))}px`;
   }
 
   const isDataPath = p => /^(cases|blocks)\//.test(p) || p === 'stepwise.json';
@@ -383,6 +504,7 @@
     if (sel) state.changed.delete(`${sel.kind}:${sel.id}`);
     setDrawer('side', false);
     LS.set('sw.sel', sel);
+    if (state.mode === 'folder' && state.current) { state.current.sel = sel; saveFolders(); }
     renderSide();
     renderMain();
     renderPanel();
@@ -413,13 +535,13 @@
   }
 
   function renderTop() {
-    const proj = state.mode === 'folder'
-      ? h('div', { class: 'proj' }, icon('folder'), h('span', { class: 'name', title: 'Files are saved to this folder' }, state.dir.name))
-      : h('div', { class: 'proj' }, h('span', { class: 'name' }, 'Sample project'),
-          h('span', { class: 'pill demo', title: 'Changes are kept in this browser only. Open a folder to save real files.' }, 'Demo · saved in this browser'));
-    const reopen = state.mode === 'demo' && state.lastHandle
-      ? h('button', { class: 'btn', type: 'button', onclick: () => openFolder(state.lastHandle) }, icon('folder'), `Reopen ${clip(state.lastHandle.name, 24)}`)
-      : null;
+    const proj = h('button', { class: 'proj', type: 'button', popovertarget: 'switcher', title: 'Switch folder (⌘O)' },
+      icon('folder'),
+      h('span', { class: 'name' }, state.mode === 'folder' ? folderLabel(state.current) || state.dir.name : 'Sample project'),
+      state.mode === 'demo' ? h('span', { class: 'pill demo', title: 'Changes are kept in this browser only. Open a folder to save real files.' }, 'Demo') : null,
+      icon('chevdown'));
+    // After a restart the browser asks again before reopening a folder, so offer it in one click.
+    const recent = state.mode === 'demo' && LS.get('sw.mode', 'folder') !== 'demo' ? state.folders[0] : null;
     $('#top').replaceChildren(...[
       h('button', { class: 'icon-btn only-narrow', type: 'button', title: 'Test cases', 'aria-label': 'Show test cases', onclick: () => toggleDrawer('side') }, icon('menu')),
       h('div', { class: 'brand' }, logo(), 'Stepwise'),
@@ -430,12 +552,12 @@
       h('button', { class: 'btn ghost', type: 'button', title: 'Work with Claude', onclick: claudeDialog }, icon('sparkle'), h('span', { class: 't-label' }, 'Work with Claude')),
       h('button', { class: 'btn ghost only-tiny', type: 'button', title: 'Links, checks and export', onclick: () => toggleDrawer('panel') }, icon('panel'), h('span', { class: 't-label' }, 'Details')),
       iconBtn('gear', 'Settings', settingsDialog),
-      reopen,
-      h('button', {
-        class: state.mode === 'demo' ? 'btn primary' : 'btn', type: 'button',
-        disabled: !canPickFolder, title: canPickFolder ? 'Choose a folder to keep test cases in' : 'Opening folders needs Chrome or Edge',
-        onclick: () => openFolder(),
-      }, icon('folder'), h('span', { class: 't-label' }, state.mode === 'demo' ? 'Open folder' : 'Switch folder')),
+      recent ? h('button', { class: 'btn primary', type: 'button', onclick: () => switchTo(recent) }, icon('folder'), h('span', { class: 't-label' }, `Reopen ${clip(folderLabel(recent), 24)}`))
+        : state.mode === 'demo' ? h('button', {
+          class: 'btn primary', type: 'button',
+          disabled: !canPickFolder, title: canPickFolder ? 'Choose a folder to keep test cases in' : 'Opening folders needs Chrome or Edge',
+          onclick: () => openFolder(),
+        }, icon('folder'), h('span', { class: 't-label' }, 'Open folder')) : null,
     ].filter(Boolean));
     setSave(state.saveState);
   }
@@ -568,9 +690,12 @@
     if (sel && sel.kind === 'coverage') return main.replaceChildren(renderCoverage());
     const item = currentItem();
     if (!item) {
+      const none = !Object.keys(P().cases).length;
       return main.replaceChildren(h('div', { class: 'empty' },
-        h('h1', {}, 'No test case selected'),
-        h('p', {}, 'Pick one from the list, or start a new one.'),
+        h('h1', {}, none ? 'No test cases yet' : 'No test case selected'),
+        h('p', {}, none
+          ? ['Write your first one, or open this folder in Claude Code and run ', h('code', {}, '/draft-case'), ' with a user story.']
+          : 'Pick one from the list, or start a new one.'),
         h('button', { class: 'btn primary', type: 'button', onclick: newCaseDialog }, icon('plus'), 'New test case')));
     }
     main.replaceChildren(item.kind === 'case' ? renderCase(item) : renderBlock(item));
@@ -1582,6 +1707,13 @@
 
   $('#search').addEventListener('input', e => { state.search = e.target.value; renderSide(); });
   $('#scrim').addEventListener('click', () => { setDrawer('side', false); setDrawer('panel', false); });
+  $('#switcher').addEventListener('beforetoggle', e => { if (e.newState === 'open') renderSwitcher(); });
+  $('#switcher').addEventListener('toggle', e => {
+    if (e.newState !== 'open') return;
+    placeSwitcher();
+    $('#switcher .menu-item[aria-current="true"], #switcher .menu-item')?.focus();
+  });
+  window.addEventListener('resize', () => { if ($('#switcher').matches(':popover-open')) placeSwitcher(); });
   window.addEventListener('focus', rescan);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
   window.addEventListener('beforeunload', e => {
@@ -1589,6 +1721,7 @@
   });
   document.addEventListener('keydown', e => {
     if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); flush(); }
+    if ((e.metaKey || e.ctrlKey) && e.key === 'o' && !$('#dialog').open) { e.preventDefault(); $('#switcher').togglePopover(); }
     if (e.key === 'Escape' && !$('#dialog').open) {
       if ($('.app').matches('.side-open, .panel-open')) { setDrawer('side', false); setDrawer('panel', false); }
       else if (state.picked.size) { state.picked.clear(); rerenderMain(); }
@@ -1603,13 +1736,18 @@
     if (!saved || (saved.kind !== 'coverage' && !currentItem())) selectFirst();
     renderAll();
     if (canPickFolder) {
-      const handle = await idbGet('last');
-      if (handle) {
-        state.lastHandle = handle;
+      let folders = await idbGet('folders');
+      if (!Array.isArray(folders)) {
+        const last = await idbGet('last');
+        folders = last ? [{ handle: last, label: '', sel: null, cases: 0, ado: '', opened: Date.now() }] : [];
+      }
+      state.folders = folders;
+      renderTop();
+      const first = folders[0];
+      if (first && LS.get('sw.mode', 'folder') !== 'demo') {
         let granted = false;
-        try { granted = (await handle.queryPermission({ mode: 'readwrite' })) === 'granted'; } catch (e) { /* stale handle */ }
-        if (granted) await openFolder(handle);
-        else renderTop();
+        try { granted = (await first.handle.queryPermission({ mode: 'readwrite' })) === 'granted'; } catch (e) { /* stale handle */ }
+        if (granted) await openFolder(first.handle, { entry: first });
       }
     }
   }

@@ -181,7 +181,30 @@ select.field { padding-right: 4px; }
 
 .brand { display: flex; align-items: center; gap: 9px; font-weight: 720; font-size: 15px; letter-spacing: -.01em; width: 240px; flex: none; }
 .brand .logo { width: 22px; height: 22px; }
-.proj { display: flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; color: var(--ink-2); }
+.proj { display: flex; align-items: center; gap: 7px; min-width: 0; height: 32px; padding: 0 8px 0 10px; border: 0; border-radius: 8px; background: transparent; color: var(--ink-2); overflow: hidden; cursor: pointer; }
+.proj:hover, .proj:focus-visible { background: var(--sunken); }
+.proj > .icon:last-child { width: 14px; height: 14px; color: var(--muted); }
+
+/* folder switcher */
+.menu { position: fixed; inset: auto; margin: 0; width: 340px; max-width: calc(100vw - 16px); max-height: min(70vh, 540px); overflow: auto; padding: 6px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--ink); box-shadow: var(--shadow); }
+.menu-head { padding: 6px 10px 4px; font-size: 11.5px; font-weight: 680; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+.menu-row { display: flex; align-items: center; gap: 1px; padding-right: 4px; border-radius: 8px; }
+.menu-row:hover, .menu-row:focus-within { background: var(--sunken); }
+.menu-row .icon-btn { opacity: 0; }
+.menu-row:hover .icon-btn, .menu-row:focus-within .icon-btn { opacity: 1; }
+@media (hover: none) { .menu-row .icon-btn { opacity: 1; } }
+.menu-item { display: flex; align-items: flex-start; gap: 8px; flex: 1; min-width: 0; padding: 7px 8px; border: 0; border-radius: 8px; background: transparent; text-align: left; cursor: pointer; }
+.menu > .menu-item { width: 100%; }
+.menu > .menu-item:hover { background: var(--sunken); }
+.menu-item:disabled { opacity: .5; cursor: not-allowed; }
+.mi-check { display: inline-grid; width: 16px; flex: none; padding-top: 2px; color: var(--accent); }
+.mi-text { display: flex; flex-direction: column; min-width: 0; }
+.mi-name, .mi-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mi-name { font-weight: 560; }
+.mi-sub { font-size: 12px; color: var(--muted); }
+.menu-sep { height: 1px; margin: 6px 4px; background: var(--line); }
+.menu-note { margin: 6px 10px; font-size: 12px; color: var(--muted); text-wrap: pretty; }
+.menu-note.foot { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
 .proj .name { font-weight: 600; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pill { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--sunken); color: var(--ink-2); white-space: nowrap; }
 .pill.new { background: var(--accent-soft); color: var(--accent); font-weight: 600; font-size: 11px; padding: 1px 6px; }
@@ -332,6 +355,7 @@ select.mini { min-inline-size: 0; flex: 0 1 auto; }
 
 .empty { max-width: 460px; margin: 12vh auto 0; text-align: center; color: var(--ink-2); padding: 0 24px; }
 .empty h1 { font-size: 20px; color: var(--ink); }
+.empty code { font: 13px ui-monospace, Menlo, monospace; padding: 1px 5px; border-radius: 4px; background: var(--sunken); }
 .cov { width: 100%; border-collapse: collapse; margin-top: 12px; }
 .cov th { text-align: left; font-size: 12px; color: var(--muted); font-weight: 600; padding: 6px 10px; border-bottom: 1px solid var(--line); }
 .cov td { padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }

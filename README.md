@@ -13,6 +13,16 @@ share them.
    below). After that,
    every edit is saved to the files automatically.
 
+### Switching between folders
+
+Click the folder name in the top bar (or press **⌘O**) to switch between the folders you've opened,
+for example one per client. Each folder remembers which case you had open. You can rename entries
+(handy when two folders share a name) or remove them from the list; removing never touches files.
+
+The list is remembered by your browser, not saved in any file, so it can't end up in this repo or
+in a test case folder. After a browser restart, Chrome asks once to allow access again when you
+reopen a folder.
+
 ### Open it like an app (Mac)
 
 ```sh
@@ -32,6 +42,7 @@ This repository contains only the app and fictional demo data. Your test cases n
   folder for test cases, and `.gitignore` excludes `cases/`, `blocks/`, `stepwise.json` and CSV
   exports just in case.
 - **Demo mode** edits are kept in your browser's local storage, not in any file.
+- **Your list of folders** is kept in your browser's storage too, never in a file.
 - **No network calls.** No analytics, no CDNs, no uploads. Links to ADO only open when you click
   them, using the project URL you set.
 - **Demo data** (`sample.js`) is a made-up expense-report app ("Expense Hub").
