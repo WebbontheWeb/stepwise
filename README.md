@@ -39,6 +39,8 @@ This repository contains only the app and fictional demo data. Your test cases n
 ## Writing steps
 
 - **⌘↵** adds a step below, **⌥↑ / ⌥↓** moves a step, or drag the handle.
+- **⌘B** and **⌘I** make text bold or italic in steps, expected results and descriptions. It's
+  saved as Markdown (`**bold**`) and survives a paste into ADO.
 - **Use block** inserts a reusable set of steps (like ADO Shared Steps, but easier to edit). Click
   the step count to expand it in place.
 - **Repeat steps** points at an earlier range ("repeat steps 3–4 as a manager"). It follows the steps
@@ -69,8 +71,12 @@ On a case's **Export** tab:
 - **CSV**: for Test Plans' *Import test cases from CSV*. The **Export CSV** button in the top bar
   exports many cases at once.
 
-Choose whether blocks are written out as steps or named in one step, and whether repeats say
-"Repeat steps 3–6" (numbered to match what ADO receives) or are written out again.
+Choose how blocks go out: written out every time, written out once with later uses turned into
+"Repeat steps 3–5", or as one step naming the block. Repeats either say "Repeat steps 3–6"
+(numbered to match what ADO receives) or are written out again.
+
+In narrow windows (say, side by side with ADO) the case list and the details panel slide in from
+the edges, so the Export tab and Copy next stay one click away.
 
 After the first import, put the ADO ID into the case so later CSVs update it instead of creating
 a duplicate.
