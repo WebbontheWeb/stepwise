@@ -1,3 +1,4 @@
+mod assistant;
 mod folders;
 mod workspace;
 
@@ -46,7 +47,7 @@ fn copy_text(app: AppHandle, text: String, html: Option<String>) -> Result<(), S
     .map_err(|e| e.to_string())
 }
 
-/// Opens a web link (an ADO work item, the Claude Code docs) in the default browser.
+/// Opens a web link (an ADO work item, an assistant's download page) in the default browser.
 #[tauri::command]
 fn open_url(app: AppHandle, url: String) -> Result<(), String> {
     if !(url.starts_with("https://") || url.starts_with("http://")) {
@@ -118,6 +119,10 @@ pub fn run() {
             workspace::write_text,
             workspace::remove_file,
             workspace::file_exists,
+            workspace::save_transcript,
+            assistant::load_settings,
+            assistant::save_settings,
+            assistant::open_assistant,
         ])
         .build(tauri::generate_context!())
         .expect("error while starting Stepwise")

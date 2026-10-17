@@ -57,6 +57,11 @@ impl Workspace {
         let open = guard.as_ref().ok_or("No folder is open")?;
         f(open)
     }
+
+    /// The folder that's open.
+    pub fn root(&self) -> Result<PathBuf, String> {
+        self.with(|o| Ok(o.root.clone()))
+    }
 }
 
 #[derive(Serialize)]
@@ -407,6 +412,34 @@ pub fn remove_file(ws: State<Workspace>, path: String, base: Option<String>) -> 
     })
 }
 
+/// Saves a pasted transcript as `transcripts/<name>.md`, adding -2, -3… rather than replacing a
+/// file that's already there. The window makes `name` from the date and a title. Returns the path.
+#[tauri::command]
+pub fn save_transcript(ws: State<Workspace>, name: String, text: String) -> Result<String, String> {
+    if !is_transcript_name(&name) {
+        return Err(format!("Not a transcript name: {name}"));
+    }
+    ws.with(|o| {
+        fs::create_dir_all(resolve(&o.root, "transcripts")?).map_err(err)?;
+        for n in 1..1000 {
+            let rel = if n == 1 { format!("transcripts/{name}.md") } else { format!("transcripts/{name}-{n}.md") };
+            match fs::OpenOptions::new().write(true).create_new(true).open(resolve(&o.root, &rel)?) {
+                Ok(mut f) => {
+                    f.write_all(text.as_bytes()).map_err(err)?;
+                    return Ok(rel);
+                }
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(err(e)),
+            }
+        }
+        Err("There are too many transcripts with that name".into())
+    })
+}
+
+fn is_transcript_name(name: &str) -> bool {
+    !name.is_empty() && name.len() <= 100 && !name.starts_with('-') && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
 #[tauri::command]
 pub fn file_exists(ws: State<Workspace>, path: String) -> Result<bool, String> {
     ws.with(|o| Ok(resolve(&o.root, &path)?.exists()))
@@ -480,6 +513,16 @@ mod tests {
         assert!(allowed.check(&display(&dir.join("sub"))).is_err());
         assert!(allowed.check("/etc").is_err());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn transcript_names() {
+        assert!(is_transcript_name("2026-10-17-expense-approval"));
+        assert!(!is_transcript_name(""));
+        assert!(!is_transcript_name("../cases/a"));
+        assert!(!is_transcript_name("a.md"));
+        assert!(!is_transcript_name("-a"));
+        assert!(!is_transcript_name(&"a".repeat(101)));
     }
 
     #[test]
