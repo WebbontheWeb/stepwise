@@ -108,6 +108,8 @@ pub fn run() {
             quit,
             folders::load_folders,
             folders::save_folders,
+            folders::load_review,
+            folders::save_review,
             workspace::folder_info,
             workspace::open_workspace,
             workspace::close_workspace,

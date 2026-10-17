@@ -98,6 +98,7 @@
     copyPos: {},
     review: new Map(), // path -> { before, after }: changes made outside the app, not reviewed yet
     disk: {}, // path -> text, as Stepwise last read or wrote it
+    away: new Map(), // folder -> its disk texts when you switched away from it
     conflicts: new Map(), // path -> your unsaved version, when the file changed on disk meanwhile
     copyFlash: null,
   };
@@ -215,7 +216,7 @@
         if (state.conflicts.has(path)) { state.conflicts.set(path, text); continue; }
         try {
           await writeFile(path, text);
-          if (state.review.delete(path)) renderSide();
+          if (state.review.delete(path)) { saveReview(); renderSide(); }
         } catch (err) {
           if (err === CONFLICT) { startConflict(path, text); continue; }
           state.dirty.add(key);
@@ -324,7 +325,7 @@
         toast(`Couldn't save ${path}: ${e}`);
         return false;
       }
-      state.review.delete(path);
+      if (state.review.delete(path)) saveReview();
       state.conflicts.delete(path);
       renderSide();
       return true;
@@ -379,6 +380,8 @@
     } catch (e) {
       return failed(e);
     }
+    // Remember how the folder you're leaving looked, to show what changes there meanwhile.
+    if (state.mode === 'folder' && state.root !== opened.path) state.away.set(state.root, state.disk);
     state.mode = 'folder';
     state.root = opened.path;
     state.disk = { ...opened.files };
@@ -397,7 +400,8 @@
     }
     state.project = loadFiles(opened.files);
     state.picked.clear();
-    state.review.clear();
+    state.review = await restoreReview(opened.path, opened.files);
+    saveReview();
     LS.set('sw.mode', 'folder');
     await rememberFolder(opened.path);
     // Come back to the case you were on in this folder.
@@ -486,8 +490,8 @@
     if (state.mode === 'demo') return;
     if (!(await settle())) return;
     await invoke('close_workspace');
-    Object.assign(state, { mode: 'demo', root: null, current: null, disk: {} });
-    state.review.clear();
+    state.away.set(state.root, state.disk);
+    Object.assign(state, { mode: 'demo', root: null, current: null, disk: {}, review: new Map() });
     state.picked.clear();
     state.project = loadFiles(LS.get('sw.demo', null) || window.StepwiseSample);
     LS.set('sw.mode', 'demo');
@@ -601,6 +605,7 @@
       applied.push(change);
     }
     if (!applied.length) return;
+    saveReview();
     changes = applied;
     refreshAfterChanges(changes);
     toast(`${plural(changes.length, 'file')} changed outside Stepwise`, state.review.size ? { label: 'Review', run: () => select({ kind: 'review' }) } : null);
@@ -620,8 +625,39 @@
 
   const pendingFor = item => state.review.has(pathOf(item));
 
+  // Unreviewed changes are kept per folder (in Stepwise's settings, not the folder), so they
+  // survive switching folders and quitting.
+  function saveReview() {
+    if (state.mode !== 'folder') return;
+    invoke('save_review', { folder: state.root, entries: Object.fromEntries(state.review) }).catch(e => console.error(e));
+  }
+
+  async function restoreReview(root, files) {
+    const review = new Map();
+    const saved = await invoke('load_review', { folder: root }).catch(() => ({}));
+    for (const [path, r] of Object.entries(saved)) {
+      if (isDataPath(path) && r && typeof r === 'object') review.set(path, { before: r.before ?? null, after: r.after ?? null });
+    }
+    // Changes made while you were in another folder (Claude keeps working in its terminal there).
+    const away = state.away.get(root);
+    if (away) {
+      for (const path of new Set([...Object.keys(away), ...Object.keys(files)])) {
+        const was = path in away ? away[path] : null, now = path in files ? files[path] : null;
+        if (was !== now && !review.has(path)) review.set(path, { before: was, after: now });
+      }
+      state.away.delete(root);
+    }
+    // Bring each change up to date with the file as it is now.
+    for (const [path, r] of review) {
+      r.after = path in files ? files[path] : null;
+      if (r.after === r.before) review.delete(path);
+    }
+    return review;
+  }
+
   function keepChange(path) {
     state.review.delete(path);
+    saveReview();
     renderSide();
     rerenderMain();
   }
@@ -640,6 +676,7 @@
       return false;
     }
     state.review.delete(path);
+    saveReview();
     state.dirty.delete(keyOf(path));
     refreshAfterChanges([{ path, after: r.before }]);
     return true;
@@ -661,6 +698,7 @@
   function keepAll() {
     const n = state.review.size;
     state.review.clear();
+    saveReview();
     renderSide();
     rerenderMain();
     toast(`Kept ${plural(n, 'change')}`);
