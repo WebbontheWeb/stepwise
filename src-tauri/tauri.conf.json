@@ -4,9 +4,7 @@
   "version": "../package.json",
   "identifier": "io.github.webbontheweb.stepwise",
   "build": {
-    "frontendDist": "../src",
-    "beforeDevCommand": "npm run vendor",
-    "beforeBuildCommand": "npm run vendor"
+    "frontendDist": "../src"
   },
   "app": {
     "withGlobalTauri": true,

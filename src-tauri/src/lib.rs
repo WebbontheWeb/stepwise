@@ -1,5 +1,4 @@
 mod folders;
-mod terminal;
 mod workspace;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -93,7 +92,6 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(workspace::Workspace::default())
         .manage(workspace::Allowed::default())
-        .manage(terminal::Terminals::default())
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if !CAN_CLOSE.load(Ordering::SeqCst) {
@@ -120,12 +118,6 @@ pub fn run() {
             workspace::write_text,
             workspace::remove_file,
             workspace::file_exists,
-            terminal::term_start,
-            terminal::term_write,
-            terminal::term_resize,
-            terminal::term_kill,
-            terminal::term_at_prompt,
-            terminal::term_ended,
         ])
         .build(tauri::generate_context!())
         .expect("error while starting Stepwise")
@@ -134,7 +126,6 @@ pub fn run() {
                 api.prevent_exit();
                 request_close(app);
             }
-            RunEvent::Exit => app.state::<terminal::Terminals>().kill_all(),
             _ => {}
         });
 }

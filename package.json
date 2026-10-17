@@ -2,10 +2,9 @@
   "name": "stepwise",
   "private": true,
   "version": "0.2.0",
-  "description": "A desktop editor for Azure DevOps manual test cases, with Claude Code built in.",
+  "description": "A desktop editor for Azure DevOps manual test cases that works with your AI assistant.",
   "license": "MIT",
   "scripts": {
-    "vendor": "node scripts/vendor.mjs",
     "dev": "tauri dev",
     "build": "tauri build",
     "test": "node test.js",
@@ -13,9 +12,5 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.3"
-  },
-  "dependencies": {
-    "@xterm/addon-fit": "^0.11.0",
-    "@xterm/xterm": "^6.0.0"
   }
 }

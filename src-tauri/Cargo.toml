@@ -1,7 +1,7 @@
 [package]
 name = "stepwise"
 version = "0.2.0"
-description = "A desktop editor for Azure DevOps manual test cases, with Claude Code built in."
+description = "A desktop editor for Azure DevOps manual test cases that works with your AI assistant."
 authors = ["WebbontheWeb"]
 license = "MIT"
 repository = "https://github.com/WebbontheWeb/stepwise"
@@ -25,5 +25,3 @@ tauri-plugin-clipboard-manager = "2"
 notify-debouncer-mini = "0.7"
 dunce = "1"
 tempfile = "3"
-portable-pty = "0.9"
-base64 = "0.22"
