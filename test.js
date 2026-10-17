@@ -63,3 +63,14 @@ assert.match(evilCsv, /,"'=HYPERLINK\(""http:\/\/x""\)",/);
 assert.match(evilCsv, /,1,'-2\+3 opens calc,'@SUM\(A1\),/);
 assert.match(S.toGridTSV(evil, S.flatten(p, evil), {}), /^=HYPERLINK/);
 console.log('formula cells ok');
+
+// a block used twice: written out every time, or once and then "Repeat steps"
+const twice = S.parseCase('twice', `---\ntitle: Twice\n---\n\n## Steps\n\n1. Use block: Log in as an employee\n2. Sign out \`#so01\`\n   Expected: Signed out\n3. Use block: Log in as an employee\n`);
+p.cases.twice = twice; S.resolveReferences(p);
+assert.strictEqual(S.flatten(p, twice, { blocks: 'inline' }).length, 5);
+const once = S.flatten(p, twice, { blocks: 'once' });
+assert.strictEqual(once.length, 4);
+assert.strictEqual(once[3].action, 'Repeat steps 1–2 (Log in as an employee)');
+assert.strictEqual(once[3].expected, 'Same results as steps 1–2');
+delete p.cases.twice;
+console.log('block once ok');

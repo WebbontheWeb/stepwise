@@ -321,7 +321,9 @@
   // ---------- flatten (what ADO receives) ----------
 
   /**
-   * opts.blocks:  'inline' (write the block's steps out) | 'name' (one step naming the block)
+   * opts.blocks:  'inline' (write the block's steps out every time)
+   *             | 'once' (write them out the first time; later uses say "Repeat steps 3–5")
+   *             | 'name' (one step naming the block)
    * opts.repeats: 'text' ("Repeat steps 4–6", numbered to match the export) | 'inline' (write them out again)
    */
   function flatten(project, c, opts = {}) {
@@ -329,6 +331,8 @@
     const repeats = opts.repeats || 'text';
     const out = [];
     const span = {};
+    const firstUse = {};
+    const rangeText = (a, z) => (a === z ? `step ${a + 1}` : `steps ${a + 1}–${z + 1}`);
     c.steps.forEach(s => {
       const start = out.length;
       if (s.type === 'action') {
@@ -336,8 +340,14 @@
       } else if (s.type === 'use') {
         const b = project.blocks[s.block];
         if (!b) out.push({ action: `[Missing block: ${s.block || 'none chosen'}]`, expected: '', kind: 'error' });
-        else if (blocks === 'inline') b.steps.forEach(bs => out.push({ action: bs.action, expected: bs.expected, kind: 'block', block: b.title }));
-        else out.push({ action: `Perform shared steps: ${b.title}`, expected: '', kind: 'block', block: b.title });
+        else if (blocks === 'name') out.push({ action: `Perform shared steps: ${b.title}`, expected: '', kind: 'block', block: b.title });
+        else if (blocks === 'once' && firstUse[b.id]) {
+          const { start: a, end: z } = firstUse[b.id];
+          out.push({ action: `Repeat ${rangeText(a, z)} (${b.title})`, expected: `Same results as ${rangeText(a, z)}`, kind: 'repeat', block: b.title });
+        } else {
+          b.steps.forEach(bs => out.push({ action: bs.action, expected: bs.expected, kind: 'block', block: b.title }));
+          if (b.steps.length) firstUse[b.id] = { start: out.length - b.steps.length, end: out.length - 1 };
+        }
       } else if (s.type === 'repeat') {
         const a = span[s.from], z = span[s.to];
         if (!a || !z || a.start > z.end) {
@@ -351,7 +361,7 @@
           }
           out.push(...copied);
         } else {
-          const range = a.start === z.end ? `step ${a.start + 1}` : `steps ${a.start + 1}–${z.end + 1}`;
+          const range = rangeText(a.start, z.end);
           out.push({ action: `Repeat ${range}${s.note ? ' ' + s.note : ''}`, expected: s.expected || `Same results as ${range}`, kind: 'repeat' });
         }
       }

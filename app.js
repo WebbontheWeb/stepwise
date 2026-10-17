@@ -1257,7 +1257,7 @@
       h('div', { class: 'psec' },
         h('h3', {}, 'Send this case to ADO'),
         h('p', { class: 'help' }, 'Steps are numbered the way ADO will number them, so “Repeat steps” stays correct.'),
-        hasBlocks ? h('div', { class: 'opt' }, h('span', { class: 'lbl' }, 'Blocks'), seg('blocks', [['inline', 'Write the steps out'], ['name', 'One step naming the block']], refresh)) : null,
+        hasBlocks ? h('div', { class: 'opt' }, h('span', { class: 'lbl' }, 'Blocks'), seg('blocks', [['inline', 'Write out every time'], ['once', 'Write out once, then “Repeat steps”'], ['name', 'One step naming the block']], refresh)) : null,
         hasRepeats ? h('div', { class: 'opt' }, h('span', { class: 'lbl' }, 'Repeats'), seg('repeats', [['text', 'Say “Repeat steps 3–6”'], ['inline', 'Write the steps out again']], refresh)) : null,
         copyNext,
         h('div', { class: 'opt' }, h('span', { class: 'lbl' }, 'Or send it all at once (needs Test Plans access)')),
@@ -1348,7 +1348,7 @@
     const o = state.exportOpts;
     const r = await ask({
       title: 'Export CSV for ADO',
-      body: h('p', {}, `For Test Plans → Import test cases from CSV. Blocks are ${o.blocks === 'inline' ? 'written out as steps' : 'named in one step'} and repeats ${o.repeats === 'text' ? 'say “Repeat steps …”' : 'are written out'} (change this on a case’s Export tab). The file also opens in Excel.`),
+      body: h('p', {}, `For Test Plans → Import test cases from CSV. Blocks are ${{ inline: 'written out every time', once: 'written out once, then repeated by step number', name: 'named in one step' }[o.blocks]} and repeats ${o.repeats === 'text' ? 'say “Repeat steps …”' : 'are written out'} (change this on a case’s Export tab). The file also opens in Excel.`),
       extra: [h('span', { class: 'lbl' }, 'Which test cases'), scope],
       buttons: [{ label: 'Cancel' }, { label: 'Download CSV', value: 'ok', primary: true }],
     });
