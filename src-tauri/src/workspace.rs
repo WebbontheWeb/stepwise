@@ -3,7 +3,8 @@
 
 use std::{
     collections::{BTreeMap, HashMap},
-    fs, io,
+    fs,
+    io::{self, Write},
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
@@ -97,6 +98,9 @@ fn is_data(rel: &str) -> bool {
 fn scan(root: &Path) -> io::Result<BTreeMap<String, String>> {
     let mut out = BTreeMap::new();
     for sub in ["cases", "blocks"] {
+        if resolve(root, sub).is_err() {
+            continue;
+        }
         let entries = match fs::read_dir(root.join(sub)) {
             Ok(e) => e,
             Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
@@ -106,18 +110,16 @@ fn scan(root: &Path) -> io::Result<BTreeMap<String, String>> {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().into_owned();
             let rel = format!("{sub}/{name}");
-            if !is_data(&rel) || !entry.path().is_file() {
+            // Only real files inside the folder: a symlink could point anywhere.
+            if !is_data(&rel) || !entry.file_type()?.is_file() || resolve(root, &rel).is_err() {
                 continue;
             }
             out.insert(rel, read_lossy(&entry.path())?);
         }
     }
-    match read_lossy(&root.join("stepwise.json")) {
-        Ok(text) => {
-            out.insert("stepwise.json".into(), text);
-        }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e),
+    let settings = root.join("stepwise.json");
+    if fs::symlink_metadata(&settings).is_ok_and(|m| m.is_file()) {
+        out.insert("stepwise.json".into(), read_lossy(&settings)?);
     }
     Ok(out)
 }
@@ -148,17 +150,14 @@ fn resolve(root: &Path, rel: &str) -> Result<PathBuf, String> {
     Ok(full)
 }
 
-/// Writes through a temporary file and a rename, so nobody ever reads a half-written file.
+/// Writes through a new, randomly named temporary file and a rename, so nobody ever reads a
+/// half-written file and nothing already at the temporary path gets followed or overwritten.
 fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let tmp = path.with_file_name(format!(".{name}.stepwise-tmp"));
-    fs::write(&tmp, text)?;
-    fs::rename(&tmp, path).inspect_err(|_| {
-        let _ = fs::remove_file(&tmp);
-    })
+    let dir = path.parent().ok_or_else(|| io::Error::other("Path has no parent"))?;
+    fs::create_dir_all(dir)?;
+    let mut tmp = tempfile::Builder::new().prefix(".stepwise-").suffix(".tmp").tempfile_in(dir)?;
+    tmp.write_all(text.as_bytes())?;
+    tmp.persist(path).map(|_| ()).map_err(|e| e.error)
 }
 
 fn watch(app: AppHandle, root: PathBuf, known: Known) -> Result<Debouncer<RecommendedWatcher>, String> {
@@ -304,6 +303,11 @@ mod tests {
         {
             std::os::unix::fs::symlink(std::env::temp_dir(), root.join("out")).unwrap();
             assert!(resolve(&root, "out/x.md").is_err());
+            fs::write(root.join("cases/ok.md"), "ok").unwrap();
+            std::os::unix::fs::symlink("/etc/hosts", root.join("cases/evil.md")).unwrap();
+            assert_eq!(scan(&root).unwrap().keys().collect::<Vec<_>>(), ["cases/ok.md"]);
+            write_atomic(&root.join("cases/ok.md"), "new").unwrap();
+            assert_eq!(fs::read_to_string(root.join("cases/ok.md")).unwrap(), "new");
         }
         fs::remove_dir_all(&dir).unwrap();
     }
