@@ -21,7 +21,7 @@ type Known = Arc<Mutex<HashMap<String, String>>>;
 struct Open {
     root: PathBuf,
     known: Known,
-    _watcher: Debouncer<RecommendedWatcher>,
+    _watcher: Option<Watcher>,
 }
 
 #[derive(Default)]
@@ -48,6 +48,16 @@ pub struct Opened {
     path: String,
     name: String,
     files: BTreeMap<String, String>,
+    /// Files that couldn't be read.
+    skipped: Vec<String>,
+    /// Set if changes made outside the app can't be watched for.
+    watch_error: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+struct Watching {
+    root: String,
+    error: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -95,9 +105,15 @@ fn is_data(rel: &str) -> bool {
     )
 }
 
-/// The data files in a folder: cases/*.md, blocks/*.md and stepwise.json.
-fn scan(root: &Path) -> io::Result<BTreeMap<String, String>> {
-    let mut out = BTreeMap::new();
+/// The data files in a folder (cases/*.md, blocks/*.md and stepwise.json), plus the paths of any
+/// that couldn't be read. One unreadable file doesn't stop the rest from loading.
+struct Scan {
+    files: BTreeMap<String, String>,
+    skipped: Vec<String>,
+}
+
+fn scan(root: &Path) -> Scan {
+    let mut out = Scan { files: BTreeMap::new(), skipped: Vec::new() };
     for sub in ["cases", "blocks"] {
         if resolve(root, sub).is_err() {
             continue;
@@ -105,24 +121,36 @@ fn scan(root: &Path) -> io::Result<BTreeMap<String, String>> {
         let entries = match fs::read_dir(root.join(sub)) {
             Ok(e) => e,
             Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(e),
+            Err(_) => {
+                out.skipped.push(format!("{sub}/"));
+                continue;
+            }
         };
-        for entry in entries {
-            let entry = entry?;
+        for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
             let rel = format!("{sub}/{name}");
             // Only real files inside the folder: a symlink could point anywhere.
-            if !is_data(&rel) || !entry.file_type()?.is_file() || resolve(root, &rel).is_err() {
+            if !is_data(&rel) || !entry.file_type().is_ok_and(|t| t.is_file()) || resolve(root, &rel).is_err() {
                 continue;
             }
-            out.insert(rel, read_lossy(&entry.path())?);
+            match read_lossy(&entry.path()) {
+                Ok(text) => {
+                    out.files.insert(rel, text);
+                }
+                Err(_) => out.skipped.push(rel),
+            }
         }
     }
     let settings = root.join("stepwise.json");
     if fs::symlink_metadata(&settings).is_ok_and(|m| m.is_file()) {
-        out.insert("stepwise.json".into(), read_lossy(&settings)?);
+        match read_lossy(&settings) {
+            Ok(text) => {
+                out.files.insert("stepwise.json".into(), text);
+            }
+            Err(_) => out.skipped.push("stepwise.json".into()),
+        }
     }
-    Ok(out)
+    out
 }
 
 fn read_lossy(p: &Path) -> io::Result<String> {
@@ -165,18 +193,43 @@ fn resolve(root: &Path, rel: &str) -> Result<PathBuf, String> {
 
 /// Writes through a new, randomly named temporary file and a rename, so nobody ever reads a
 /// half-written file and nothing already at the temporary path gets followed or overwritten.
+/// The file keeps its permissions; a new file gets the usual ones (not tempfile's owner-only
+/// default), so teammates sharing the folder can still read it.
 fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
     let dir = path.parent().ok_or_else(|| io::Error::other("Path has no parent"))?;
     fs::create_dir_all(dir)?;
-    let mut tmp = tempfile::Builder::new().prefix(".stepwise-").suffix(".tmp").tempfile_in(dir)?;
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".stepwise-").suffix(".tmp");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(fs::Permissions::from_mode(0o666)); // narrowed by the umask
+    }
+    let mut tmp = builder.tempfile_in(dir)?;
+    if let Ok(meta) = fs::metadata(path) {
+        tmp.as_file().set_permissions(meta.permissions())?;
+    }
     tmp.write_all(text.as_bytes())?;
     tmp.persist(path).map(|_| ()).map_err(|e| e.error)
 }
 
-fn watch(app: AppHandle, root: PathBuf, known: Known) -> Result<Debouncer<RecommendedWatcher>, String> {
+type Watcher = Arc<Mutex<Option<Debouncer<RecommendedWatcher>>>>;
+
+/// Watches the folder itself (for stepwise.json, and cases/ or blocks/ being replaced) and cases/
+/// and blocks/, not everything under it: a big folder could use up Linux's limit on watches.
+/// Problems are reported to the window as "watch-error".
+fn watch(app: AppHandle, root: PathBuf, known: Known) -> Result<Watcher, String> {
+    let shared: Watcher = Arc::new(Mutex::new(None));
+    let weak = Arc::downgrade(&shared);
     let r = root.clone();
-    let mut debouncer = new_debouncer(Duration::from_millis(300), move |res: DebounceEventResult| {
-        let Ok(events) = res else { return };
+    let debouncer = new_debouncer(Duration::from_millis(300), move |res: DebounceEventResult| {
+        let events = match res {
+            Ok(events) => events,
+            Err(e) => {
+                let _ = app.emit("watch-error", Watching { root: display(&r), error: e.to_string() });
+                return;
+            }
+        };
         let relevant = events.iter().any(|e| match e.path.strip_prefix(&r) {
             Ok(rel) => matches!(
                 rel.components().next().map(|c| c.as_os_str().to_string_lossy().into_owned()).as_deref(),
@@ -187,34 +240,63 @@ fn watch(app: AppHandle, root: PathBuf, known: Known) -> Result<Debouncer<Recomm
         if !relevant {
             return;
         }
+        // cases/ or blocks/ may have been created or replaced (a git checkout): watch them again.
+        if let Some(shared) = weak.upgrade() {
+            if let Ok(mut guard) = shared.try_lock() {
+                if let Some(d) = guard.as_mut() {
+                    watch_subfolders(d, &r);
+                }
+            }
+        }
         let mut known = known.lock().unwrap();
-        let Ok(now) = scan(&r) else { return };
+        let Scan { mut files, skipped } = scan(&r);
+        // A file that couldn't be read right now (locked mid-write) hasn't changed as far as we know.
+        for path in &skipped {
+            if let Some(text) = known.get(path) {
+                files.insert(path.clone(), text.clone());
+            }
+        }
         let mut changes = Vec::new();
-        for (path, text) in &now {
+        for (path, text) in &files {
             if known.get(path) != Some(text) {
                 changes.push(Change { path: path.clone(), before: known.get(path).cloned(), after: Some(text.clone()) });
             }
         }
         for (path, text) in known.iter() {
-            if !now.contains_key(path) {
+            if !files.contains_key(path) {
                 changes.push(Change { path: path.clone(), before: Some(text.clone()), after: None });
             }
         }
         if changes.is_empty() {
             return;
         }
-        *known = now.into_iter().collect();
+        *known = files.into_iter().collect();
         let _ = app.emit("workspace-changed", Changed { root: display(&r), changes });
     })
     .map_err(err)?;
-    debouncer.watcher().watch(&root, RecursiveMode::Recursive).map_err(err)?;
-    Ok(debouncer)
+    {
+        let mut guard = shared.lock().unwrap();
+        let d = guard.insert(debouncer);
+        d.watcher().watch(&root, RecursiveMode::NonRecursive).map_err(err)?;
+        watch_subfolders(d, &root);
+    }
+    Ok(shared)
+}
+
+fn watch_subfolders(d: &mut Debouncer<RecommendedWatcher>, root: &Path) {
+    for sub in ["cases", "blocks"] {
+        let dir = root.join(sub);
+        if dir.is_dir() {
+            let _ = d.watcher().watch(&dir, RecursiveMode::NonRecursive);
+        }
+    }
 }
 
 #[tauri::command]
 pub fn folder_info(path: String) -> Result<FolderInfo, String> {
     let root = canonical_dir(&path)?;
-    let set_up = !scan(&root).map_err(err)?.is_empty();
+    let found = scan(&root);
+    let set_up = !found.files.is_empty() || !found.skipped.is_empty();
     Ok(FolderInfo { path: display(&root), name: folder_name(&root), set_up })
 }
 
@@ -231,13 +313,15 @@ pub fn open_workspace(app: AppHandle, ws: State<Workspace>, path: String, setup:
             write_atomic(&settings, "{\n  \"adoBaseUrl\": \"\"\n}\n").map_err(err)?;
         }
     }
-    let files = scan(&root).map_err(|e| format!("Couldn't read {} ({e})", display(&root)))?;
+    let Scan { files, skipped } = scan(&root);
     let known: Known = Arc::new(Mutex::new(files.clone().into_iter().collect()));
-    let mut guard = ws.0.lock().unwrap();
-    *guard = None; // stop watching the previous folder first
-    let watcher = watch(app, root.clone(), known.clone())?;
-    *guard = Some(Open { root: root.clone(), known, _watcher: watcher });
-    Ok(Opened { path: display(&root), name: folder_name(&root), files })
+    // Nothing can fail from here on, so a folder that doesn't open leaves the previous one open.
+    let (watcher, watch_error) = match watch(app, root.clone(), known.clone()) {
+        Ok(w) => (Some(w), None),
+        Err(e) => (None, Some(e)),
+    };
+    *ws.0.lock().unwrap() = Some(Open { root: root.clone(), known, _watcher: watcher });
+    Ok(Opened { path: display(&root), name: folder_name(&root), files, skipped, watch_error })
 }
 
 #[tauri::command]
@@ -323,7 +407,21 @@ mod tests {
             assert!(resolve(&root, "out/x.md").is_err());
             fs::write(root.join("cases/ok.md"), "ok").unwrap();
             std::os::unix::fs::symlink("/etc/hosts", root.join("cases/evil.md")).unwrap();
-            assert_eq!(scan(&root).unwrap().keys().collect::<Vec<_>>(), ["cases/ok.md"]);
+            assert_eq!(scan(&root).files.keys().collect::<Vec<_>>(), ["cases/ok.md"]);
+            // One unreadable file is skipped, not fatal.
+            use std::os::unix::fs::PermissionsExt;
+            fs::write(root.join("cases/locked.md"), "x").unwrap();
+            fs::set_permissions(root.join("cases/locked.md"), fs::Permissions::from_mode(0o000)).unwrap();
+            let found = scan(&root);
+            assert_eq!(found.files.keys().collect::<Vec<_>>(), ["cases/ok.md"]);
+            assert_eq!(found.skipped, ["cases/locked.md"]);
+            fs::remove_file(root.join("cases/locked.md")).unwrap();
+            // Writing keeps a file's permissions, and new files aren't owner-only.
+            fs::set_permissions(root.join("cases/ok.md"), fs::Permissions::from_mode(0o664)).unwrap();
+            write_atomic(&root.join("cases/ok.md"), "kept").unwrap();
+            assert_eq!(fs::metadata(root.join("cases/ok.md")).unwrap().permissions().mode() & 0o777, 0o664);
+            write_atomic(&root.join("cases/new.md"), "new").unwrap();
+            assert_ne!(fs::metadata(root.join("cases/new.md")).unwrap().permissions().mode() & 0o044, 0);
             write_atomic(&root.join("cases/ok.md"), "new").unwrap();
             assert_eq!(fs::read_to_string(root.join("cases/ok.md")).unwrap(), "new");
         }

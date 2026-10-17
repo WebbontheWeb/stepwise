@@ -408,7 +408,17 @@
     syncTerm();
     $('#main').scrollTop = 0;
     setSave('saved');
-    if (!opts.quiet) toast(`Opened ${folderLabel(state.current)}`);
+    state.watchWarned = false;
+    const problems = [];
+    if (opened.skipped.length) problems.push(`Couldn't read ${plural(opened.skipped.length, 'file')} (${clip(opened.skipped.join(', '), 80)}), so ${opened.skipped.length === 1 ? 'it isn’t' : 'they aren’t'} shown.`);
+    if (opened.watch_error) problems.push(watchProblem(opened.watch_error));
+    if (problems.length) toast(problems.join(' '), null, 12000);
+    else if (!opts.quiet) toast(`Opened ${folderLabel(state.current)}`);
+  }
+
+  function watchProblem(error) {
+    state.watchWarned = true;
+    return `Stepwise can't watch this folder for changes made outside it (${error}). It still won't overwrite them: saving checks the file first.`;
   }
 
   // ---------- remembered folders ----------
@@ -2153,12 +2163,12 @@
     }
   }
 
-  function toast(msg, action) {
+  function toast(msg, action, ms) {
     const t = $('#toast');
     t.replaceChildren(...[h('span', {}, msg), action && h('button', { type: 'button', onclick() { action.run(); t.classList.remove('show'); } }, action.label)].filter(Boolean));
     t.classList.add('show');
     clearTimeout(t._timer);
-    t._timer = setTimeout(() => t.classList.remove('show'), action ? 7000 : 2600);
+    t._timer = setTimeout(() => t.classList.remove('show'), ms || (action ? 7000 : 2600));
   }
 
   // ---------- boot ----------
@@ -2188,6 +2198,9 @@
     invoke('open_url', { url: a.href }).catch(err => toast(`Couldn't open the link: ${err}`));
   });
   listen('workspace-changed', onExternalChanges);
+  listen('watch-error', ({ root, error }) => {
+    if (root === state.root && !state.watchWarned) toast(watchProblem(error), null, 12000);
+  });
   // Closing the window waits for the last edits to be saved, and for you to settle any conflict.
   listen('close-requested', async () => {
     invoke('hold_close');
