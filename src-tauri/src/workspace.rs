@@ -129,6 +129,18 @@ fn read_lossy(p: &Path) -> io::Result<String> {
     Ok(String::from_utf8_lossy(&fs::read(p)?).into_owned())
 }
 
+/// A file's text, or None if there's no such file. Other errors (no permission) are errors.
+fn read_opt(p: &Path) -> io::Result<Option<String>> {
+    match read_lossy(p) {
+        Ok(t) => Ok(Some(t)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Returned when a data file on disk isn't the text the edit was based on.
+const CONFLICT: &str = "changed-on-disk";
+
 /// Turns a path relative to the folder into a full path, refusing absolute paths, `..`, and
 /// anything (such as a symlink) that resolves outside the folder.
 fn resolve(root: &Path, rel: &str) -> Result<PathBuf, String> {
@@ -235,41 +247,46 @@ pub fn close_workspace(ws: State<Workspace>) {
 
 #[tauri::command]
 pub fn read_text(ws: State<Workspace>, path: String) -> Result<Option<String>, String> {
-    ws.with(|o| {
-        let full = resolve(&o.root, &path)?;
-        match read_lossy(&full) {
-            Ok(t) => Ok(Some(t)),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(err(e)),
-        }
-    })
+    ws.with(|o| read_opt(&resolve(&o.root, &path)?).map_err(err))
 }
 
-/// Writes a file in the open folder. For data files, refuses with "changed-on-disk" if the file
-/// changed outside the app since the app last saw it; the watcher then delivers that change instead.
+/// Writes a file in the open folder. For data files, `base` is the text the edit was based on (None
+/// for a new file): if the file on disk is something else, nothing is written and the error is
+/// "changed-on-disk", so an outside change is never overwritten unseen. That holds even when the
+/// watcher hasn't reported the change yet, or never will (network drives), and when a new file's
+/// name matches an existing one on a case-insensitive disk.
 #[tauri::command]
-pub fn write_text(ws: State<Workspace>, path: String, text: String) -> Result<(), String> {
+pub fn write_text(ws: State<Workspace>, path: String, text: String, base: Option<String>) -> Result<(), String> {
     ws.with(|o| {
         let full = resolve(&o.root, &path)?;
         if !is_data(&path) {
             return write_atomic(&full, &text).map_err(err);
         }
         let mut known = o.known.lock().unwrap();
-        let disk = read_lossy(&full).ok();
-        if disk.as_ref() != known.get(&path) && disk.as_ref() != Some(&text) {
-            return Err("changed-on-disk".into());
-        }
+        check_base(&full, base.as_deref(), Some(&text))?;
         write_atomic(&full, &text).map_err(err)?;
         known.insert(path, text);
         Ok(())
     })
 }
 
+fn check_base(full: &Path, base: Option<&str>, goal: Option<&str>) -> Result<(), String> {
+    let disk = read_opt(full).map_err(err)?;
+    if disk.as_deref() != base && disk.as_deref() != goal {
+        return Err(CONFLICT.into());
+    }
+    Ok(())
+}
+
+/// Deletes a file in the open folder. For data files, `base` works as for write_text.
 #[tauri::command]
-pub fn remove_file(ws: State<Workspace>, path: String) -> Result<(), String> {
+pub fn remove_file(ws: State<Workspace>, path: String, base: Option<String>) -> Result<(), String> {
     ws.with(|o| {
         let full = resolve(&o.root, &path)?;
         let mut known = o.known.lock().unwrap();
+        if is_data(&path) {
+            check_base(&full, base.as_deref(), None)?;
+        }
         match fs::remove_file(&full) {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -310,6 +327,21 @@ mod tests {
             write_atomic(&root.join("cases/ok.md"), "new").unwrap();
             assert_eq!(fs::read_to_string(root.join("cases/ok.md")).unwrap(), "new");
         }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn base_check() {
+        let dir = std::env::temp_dir().join(format!("stepwise-base-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("a.md");
+        assert!(check_base(&f, None, Some("x")).is_ok()); // new file
+        fs::write(&f, "theirs").unwrap();
+        assert_eq!(check_base(&f, None, Some("x")), Err(CONFLICT.into())); // name already taken
+        assert_eq!(check_base(&f, Some("mine before"), Some("x")), Err(CONFLICT.into())); // changed on disk
+        assert!(check_base(&f, Some("theirs"), Some("x")).is_ok());
+        assert!(check_base(&f, Some("old"), Some("theirs")).is_ok()); // already says what we'd write
+        assert_eq!(check_base(&f, Some("old"), None), Err(CONFLICT.into())); // delete after a change
         fs::remove_dir_all(&dir).unwrap();
     }
 

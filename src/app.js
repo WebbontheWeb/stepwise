@@ -68,6 +68,7 @@
   const firstLine = t => String(t || '').split('\n')[0];
   const clip = (t, n = 48) => (t.length > n ? t.slice(0, n - 1) + '…' : t);
   const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
   const baseName = p => String(p || '').split(/[\\/]/).filter(Boolean).pop() || String(p || '');
   const isMac = /Mac/i.test(navigator.platform);
   const MOD = isMac ? '⌘' : 'Ctrl+';
@@ -96,6 +97,8 @@
     drag: null,
     copyPos: {},
     review: new Map(), // path -> { before, after }: changes made outside the app, not reviewed yet
+    disk: {}, // path -> text, as Stepwise last read or wrote it
+    conflicts: new Map(), // path -> your unsaved version, when the file changed on disk meanwhile
     copyFlash: null,
   };
   const P = () => state.project;
@@ -163,14 +166,28 @@
   }
 
   // Paths are relative to the open folder; the Rust side refuses anything outside it.
-  const writeFile = (path, text) => invoke('write_text', { path, text });
-  const removeFile = path => invoke('remove_file', { path });
+  // state.disk holds each data file's text as Stepwise last read or wrote it. Saves send it along
+  // as the version the edit was based on, so a file changed on disk in the meantime is never
+  // overwritten unseen (the save is refused with "changed-on-disk" instead).
+  const CONFLICT = 'changed-on-disk';
+  const diskText = path => (path in state.disk ? state.disk[path] : null);
+  const isDataPath = path => path === 'stepwise.json' || /^(cases|blocks)\/[^/]+\.md$/.test(path);
+  async function writeFile(path, text, base = diskText(path)) {
+    await invoke('write_text', { path, text, base });
+    if (isDataPath(path)) state.disk[path] = text;
+  }
+  async function removeFile(path, base = diskText(path)) {
+    await invoke('remove_file', { path, base });
+    delete state.disk[path];
+  }
   const readText = path => invoke('read_text', { path });
   const keyOf = path => {
     if (path === 'stepwise.json') return 'settings';
     const m = path.match(/^(cases|blocks)\/(.+)\.md$/);
     return m ? `${m[1] === 'cases' ? 'case' : 'block'}:${m[2]}` : null;
   };
+  // Ids already in use, ignoring case: on Windows and macOS disks "Login.md" and "login.md" are one file.
+  const usedIds = map => new Set(Object.keys(map).map(k => k.toLowerCase()));
 
   // ---------- saving ----------
 
@@ -195,25 +212,34 @@
       for (const key of keys) {
         const [path, text] = fileFor(key);
         if (!path) continue;
+        if (state.conflicts.has(path)) { state.conflicts.set(path, text); continue; }
         try {
           await writeFile(path, text);
           if (state.review.delete(path)) renderSide();
         } catch (err) {
-          // Changed outside Stepwise since it was loaded: the outside version wins and arrives
-          // through the file watcher, so don't overwrite it.
-          if (err === 'changed-on-disk') continue;
+          if (err === CONFLICT) { startConflict(path, text); continue; }
           state.dirty.add(key);
           failed = true;
           console.error(err);
         }
       }
       for (const path of deleted) {
-        try { await removeFile(path); } catch (err) { state.deleted.add(path); failed = true; console.error(err); }
+        if (state.conflicts.has(path)) { state.conflicts.set(path, null); continue; }
+        try {
+          await removeFile(path);
+        } catch (err) {
+          if (err === CONFLICT) { startConflict(path, null); continue; }
+          state.deleted.add(path);
+          failed = true;
+          console.error(err);
+        }
       }
     } else {
       LS.set('sw.demo', allFiles());
     }
-    setSave(failed ? 'error' : state.dirty.size ? 'pending' : 'saved');
+    // Edits that couldn't be saved stay unsaved and are tried again shortly.
+    if (failed) state.saveTimer = setTimeout(flush, 5000);
+    setSave(failed ? 'error' : state.conflicts.size ? 'conflict' : state.dirty.size ? 'pending' : 'saved');
     const count = Object.keys(P().cases).length;
     if (state.mode === 'folder' && state.current && state.current.cases !== count) { state.current.cases = count; saveFolders(); }
   }
@@ -222,8 +248,102 @@
     state.saveState = s;
     const el = $('#save');
     if (!el) return;
-    el.className = 'save' + (s === 'error' ? ' error' : '');
-    el.textContent = { pending: 'Unsaved changes', saving: 'Saving…', saved: 'All changes saved', error: "Couldn't save. Retrying on next edit." }[s];
+    el.className = 'save' + (s === 'error' || s === 'conflict' ? ' error' : '');
+    el.textContent = {
+      pending: 'Unsaved changes', saving: 'Saving…', saved: 'All changes saved',
+      error: "Couldn't save. Trying again…", conflict: 'Changed on disk: choose a version',
+    }[s];
+    el.onclick = s === 'conflict' ? resolveConflicts : null;
+    el.style.cursor = s === 'conflict' ? 'pointer' : '';
+  }
+
+  // ---------- conflicts ----------
+  // A file changed on disk (by Claude, a teammate or a sync service) while you had unsaved edits
+  // to it. Nothing is dropped: you choose which version to keep. state.conflicts maps the path to
+  // your version (null if you deleted it).
+
+  let resolving = null;
+  function startConflict(path, mine) {
+    state.conflicts.set(path, mine);
+    setSave('conflict');
+    resolveConflicts();
+  }
+
+  function resolveConflicts() {
+    resolving = resolving || (async () => {
+      try {
+        while (state.conflicts.size) {
+          while ($('#dialog').open) await sleep(300);
+          const [path, mine] = state.conflicts.entries().next().value;
+          if (!(await resolveConflict(path, mine))) break; // dismissed: ask again from the save status
+        }
+      } finally {
+        resolving = null;
+        setSave(state.conflicts.size ? 'conflict' : state.dirty.size ? 'pending' : 'saved');
+      }
+    })();
+    return resolving;
+  }
+
+  async function resolveConflict(path, mine) {
+    let disk;
+    try {
+      disk = await readText(path);
+    } catch (e) {
+      toast(`Couldn't read ${path}: ${e}`);
+      return false;
+    }
+    if (disk === mine) {
+      state.conflicts.delete(path);
+      if (disk == null) delete state.disk[path]; else state.disk[path] = disk;
+      return true;
+    }
+    const key = keyOf(path);
+    const [kind, id] = (key || '').split(':');
+    const item = kind === 'case' ? P().cases[id] : kind === 'block' ? P().blocks[id] : null;
+    const name = (item && item.title) || path;
+    const choice = await ask({
+      title: `“${name}” was changed outside Stepwise`,
+      body: disk == null
+        ? `${path} was deleted on disk (by Claude, a teammate or a sync service) while you had unsaved edits to it.`
+        : mine == null
+          ? `You deleted ${path} here, but it was changed on disk (by Claude, a teammate or a sync service) before that was saved.`
+          : `${path} changed on disk (by Claude, a teammate or a sync service) while you had unsaved edits to it. Which version do you want to keep?`,
+      buttons: [
+        { label: disk == null ? 'Leave it deleted' : mine == null ? 'Keep the file' : 'Use the version on disk', value: 'disk' },
+        { label: mine == null ? 'Delete it' : 'Keep my version', value: 'mine', primary: true },
+      ],
+    });
+    if (!choice) return false;
+    if (choice === 'mine') {
+      try {
+        if (mine == null) await removeFile(path, disk);
+        else await writeFile(path, mine, disk);
+      } catch (e) {
+        if (e === CONFLICT) return true; // changed yet again: the loop asks again with the newest version
+        toast(`Couldn't save ${path}: ${e}`);
+        return false;
+      }
+      state.review.delete(path);
+      state.conflicts.delete(path);
+      renderSide();
+      return true;
+    }
+    // Take the version on disk.
+    state.conflicts.delete(path);
+    if (key) state.dirty.delete(key);
+    if (disk == null) delete state.disk[path]; else state.disk[path] = disk;
+    refreshAfterChanges([{ path, after: disk }]);
+    return true;
+  }
+
+  // Before switching folders: save, and settle any conflicts. False if one is still open.
+  async function settle() {
+    await flush();
+    if (state.conflicts.size) await resolveConflicts();
+    if (!state.conflicts.size) return true;
+    toast('Choose which version to keep first.');
+    return false;
   }
 
   // ---------- opening folders ----------
@@ -252,7 +372,7 @@
       });
       if (!choice) return;
     }
-    await flush();
+    if (!(await settle())) return;
     let opened;
     try {
       opened = await invoke('open_workspace', { path: info.path, setup: !info.setUp });
@@ -261,6 +381,7 @@
     }
     state.mode = 'folder';
     state.root = opened.path;
+    state.disk = { ...opened.files };
     try {
       if (choice === 'sample' && !info.setUp) {
         for (const [p, text] of Object.entries(window.StepwiseSample)) {
@@ -353,9 +474,9 @@
   async function switchToDemo() {
     setMenu(false);
     if (state.mode === 'demo') return;
-    await flush();
+    if (!(await settle())) return;
     await invoke('close_workspace');
-    Object.assign(state, { mode: 'demo', root: null, current: null });
+    Object.assign(state, { mode: 'demo', root: null, current: null, disk: {} });
     state.review.clear();
     state.picked.clear();
     state.project = loadFiles(LS.get('sw.demo', null) || window.StepwiseSample);
@@ -449,14 +570,28 @@
 
   function onExternalChanges({ root, changes }) {
     if (state.mode !== 'folder' || root !== state.root) return;
-    for (const { path, before, after } of changes) {
-      // The outside version wins over edits not saved yet.
-      state.dirty.delete(keyOf(path));
+    const applied = [];
+    for (const change of changes) {
+      const { path, before, after } = change;
+      const key = keyOf(path);
+      // Already being settled, or you have unsaved edits to it: ask which version to keep.
+      if (state.conflicts.has(path)) continue;
+      if ((key && state.dirty.has(key)) || state.deleted.has(path)) {
+        const mine = state.deleted.has(path) ? null : fileFor(key)[1];
+        if (key) state.dirty.delete(key);
+        state.deleted.delete(path);
+        startConflict(path, mine);
+        continue;
+      }
+      if (after == null) delete state.disk[path]; else state.disk[path] = after;
       // Keep the text from before the first change you haven't reviewed, so Undo goes all the way back.
       const first = state.review.has(path) ? state.review.get(path).before : before;
       if (first === after) state.review.delete(path);
       else state.review.set(path, { before: first, after });
+      applied.push(change);
     }
+    if (!applied.length) return;
+    changes = applied;
     refreshAfterChanges(changes);
     toast(`${plural(changes.length, 'file')} changed outside Stepwise`, state.review.size ? { label: 'Review', run: () => select({ kind: 'review' }) } : null);
   }
@@ -1256,7 +1391,7 @@
     });
     if (!r || !r.text.trim()) return;
     const before = snapshot(c);
-    const id = S.uniqueSlug(r.text, new Set(Object.keys(P().blocks)));
+    const id = S.uniqueSlug(r.text, usedIds(P().blocks));
     const block = { kind: 'block', id, title: r.text.trim(), description: '', steps: picked.map(s => ({ id: s.id, type: 'action', action: s.action, expected: s.expected })) };
     P().blocks[id] = block;
     const first = c.steps.findIndex(s => state.picked.has(s.id));
@@ -1298,7 +1433,7 @@
       buttons: [{ label: 'Cancel' }, { label: 'Create', value: 'ok', primary: true }],
     });
     if (!r || !r.text.trim()) return;
-    const id = S.uniqueSlug(r.text, new Set(Object.keys(P().cases)));
+    const id = S.uniqueSlug(r.text, usedIds(P().cases));
     const c = S.parseCase(id, '');
     c.title = r.text.trim();
     c.suite = suiteInput.value.trim();
@@ -1317,7 +1452,7 @@
       buttons: [{ label: 'Cancel' }, { label: 'Create', value: 'ok', primary: true }],
     });
     if (!r || !r.text.trim()) return;
-    const id = S.uniqueSlug(r.text, new Set(Object.keys(P().blocks)));
+    const id = S.uniqueSlug(r.text, usedIds(P().blocks));
     const b = { kind: 'block', id, title: r.text.trim(), description: '', steps: [S.newStep('action', new Set())] };
     P().blocks[id] = b;
     touch(b);
@@ -1326,7 +1461,7 @@
   }
 
   function duplicateCase(c) {
-    const id = S.uniqueSlug(c.title + ' copy', new Set(Object.keys(P().cases)));
+    const id = S.uniqueSlug(c.title + ' copy', usedIds(P().cases));
     const copy = JSON.parse(JSON.stringify(c));
     Object.assign(copy, { id, title: `${c.title} (copy)`, ado_id: '', related: [], state: 'Design' });
     P().cases[id] = copy;
@@ -1717,7 +1852,6 @@
   // buttons type commands into it.
 
   const INSTALL_URL = 'https://code.claude.com/docs/en/setup';
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
   const term = { open: LS.get('sw.termOpen', false), height: LS.get('sw.termH', 320), sessions: new Map() };
 
   const ANSI = {
@@ -2035,9 +2169,19 @@
     invoke('open_url', { url: a.href }).catch(err => toast(`Couldn't open the link: ${err}`));
   });
   listen('workspace-changed', onExternalChanges);
-  // Closing the window waits for the last edits to be saved.
+  // Closing the window waits for the last edits to be saved, and for you to settle any conflict.
   listen('close-requested', async () => {
-    try { await flush(); } finally { invoke('quit'); }
+    invoke('hold_close');
+    if (!(await settle())) return;
+    if (state.dirty.size || state.deleted.size) {
+      const r = await ask({
+        title: 'Some changes couldn’t be saved',
+        body: 'Stepwise couldn’t write them to the folder. If you quit now, they’re lost.',
+        buttons: [{ label: 'Don’t quit' }, { label: 'Quit anyway', value: 'quit', primary: true }],
+      });
+      if (!r) return;
+    }
+    invoke('quit');
   });
   document.addEventListener('keydown', e => {
     if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); flush(); }
