@@ -8,8 +8,8 @@
   const AGENTS_MD = `# Test cases (Stepwise)
 
 This folder holds manual test cases for Azure DevOps (ADO) Test Plans. People edit them in the
-Stepwise app (a local web page) and copy them into ADO. You can read, review and edit these files
-directly. Stepwise reloads changed files when its window regains focus.
+Stepwise desktop app and copy them into ADO. You can read, review and edit these files directly.
+Stepwise reloads changed files straight away and lets the user keep or undo each change.
 
 ## Layout
 
