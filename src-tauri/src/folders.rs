@@ -24,9 +24,13 @@ pub struct Folder {
     /// The ADO project, e.g. "contoso / expenses".
     #[serde(default)]
     ado: String,
-    /// Whether you agreed to add AGENTS.md, CLAUDE.md and the commands; unset until asked.
+    /// Whether you agreed to add the AI instruction files (AGENTS.md, CLAUDE.md and the Claude
+    /// commands); unset until asked. Named for when they were only for Claude.
     #[serde(default, rename = "claudeFiles", skip_serializing_if = "Option::is_none")]
     claude_files: Option<bool>,
+    /// The version of those files you were last asked about, so an update is offered only once.
+    #[serde(default, rename = "filesVersion", skip_serializing_if = "Option::is_none")]
+    files_version: Option<u32>,
 }
 
 fn file(app: &AppHandle) -> Result<PathBuf, String> {

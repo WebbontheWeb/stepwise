@@ -1,9 +1,13 @@
 /*
- * Files Stepwise adds to a test case folder so Claude (and other AI agents) can work in it.
- * Keys are paths inside that folder. Stepwise only writes a file if it's missing, so edits are kept.
+ * Files Stepwise adds to a test case folder so AI assistants (Claude, Codex and others that read
+ * AGENTS.md) can work in it, the prompts Stepwise hands them, and how older copies of the files
+ * get updated. Keys are paths inside that folder. Stepwise asks before writing any of them.
  */
 (function (root) {
   'use strict';
+
+  // Raise this when the files change, so folders set up earlier are offered the new version once.
+  const VERSION = 2;
 
   const AGENTS_MD = `# Test cases (Stepwise)
 
@@ -16,7 +20,9 @@ Stepwise reloads changed files straight away and lets the user keep or undo each
 - \`cases/<id>.md\`: one test case per file. The file name is the case id.
 - \`blocks/<id>.md\`: reusable step blocks (like ADO Shared Steps). The file name is the block id.
 - \`stepwise.json\`: settings (the ADO project URL). Leave it alone unless asked.
-- \`.claude/commands/\`: the /audit, /draft-case and /find-blocks commands.
+- \`transcripts/\`: narrated test sessions the user saved from Stepwise, to turn into cases.
+  Read them, but don't edit or delete them.
+- \`.claude/commands/\`: Claude Code commands that run the workflows below.
 
 ## Test case format
 
@@ -111,23 +117,16 @@ that uses it: search for \`use:<block-id>\` to see which.
 - Small fixes you're asked for are fine. Ask before deleting files or making sweeping changes.
 - New cases: \`state: Design\`, \`ado_id\` blank, file name a short kebab-case version of the title.
 - Never put real credentials or personal data in test cases; refer to test accounts by name.
-`;
 
-  const CLAUDE_MD = `# Claude Code
+## Workflows
 
-Instructions for this folder live in AGENTS.md, which other AI tools read too.
+Stepwise starts sessions with prompts such as "Follow the Review cases workflow in AGENTS.md". These
+are those workflows.
 
-@AGENTS.md
-`;
+### Review cases
 
-  const AUDIT = `---
-description: Review test cases for clarity, completeness and coverage gaps
-argument-hint: "[case id, suite, requirement id, or blank for all]"
----
-
-Review these test cases: $ARGUMENTS (if blank, review everything in cases/).
-
-Use "Writing good test cases" in AGENTS.md as the standard. For each case, check that:
+Review the cases you were given (if none, everything in cases/), using "Writing good test cases" as
+the standard. For each case, check that:
 
 - every action step has one clear action and a specific, observable expected result
 - the steps are in order and nothing needed to reach a state is missing
@@ -139,17 +138,13 @@ overlapping cases, and cases that should be related or linked to a requirement.
 
 Report findings grouped by case, most important first, with a suggested rewrite for each weak step.
 Don't edit anything yet: ask which fixes to apply, then make them in the files.
-`;
 
-  const DRAFT = `---
-description: Draft new test cases from a user story or acceptance criteria
-argument-hint: "<user story, acceptance criteria, or what to test>"
----
+### Draft cases from a user story
 
-Draft manual test cases for: $ARGUMENTS
+The user gives you a user story, acceptance criteria, or a description of what to test.
 
-1. Read AGENTS.md, then look at the existing cases and blocks so the new cases match their style and
-   reuse blocks where they fit.
+1. Look at the existing cases and blocks so the new cases match their style and reuse blocks where
+   they fit.
 2. If the request includes an ADO work item id, put it in \`tests:\`.
 3. Cover the main path plus the important negative paths and boundaries. Several small cases are
    usually better than one long one.
@@ -157,11 +152,8 @@ Draft manual test cases for: $ARGUMENTS
    and ask for a go-ahead.
 5. Then create the files in cases/ (and blocks/ if needed) with \`state: Design\` and a blank
    \`ado_id\`, and list related cases on both sides.
-`;
 
-  const FIND_BLOCKS = `---
-description: Find repeated steps that should become reusable blocks
----
+### Find steps worth reusing
 
 Look through cases/ for runs of two or more steps that appear, word for word or nearly, in several
 cases, and for existing blocks that cases could use but don't.
@@ -170,7 +162,51 @@ For each candidate, show the steps, which cases contain them, and a suggested bl
 changing anything. Once approved, create the block in blocks/ and replace those steps in each case
 with a \`use:\` step. Keep the ids of the remaining steps unchanged, and fix any \`repeat:\` range that
 pointed at a replaced step so it points at the new \`use:\` step.
+
+### Cases from a transcript
+
+A file in transcripts/ is the user talking through a test session while they ran it on a device:
+what they did, what they saw, and asides. Turn it into test cases.
+
+1. Read the whole transcript, then the existing cases and blocks.
+2. Split it into cases: one per goal or scenario the user tested. Skip chatter, false starts and
+   steps they undid, unless the detour is itself worth testing.
+3. Write each case in the format above: one action per step, as an instruction, naming the exact
+   control or data the user mentioned.
+4. Reuse existing blocks for setup (signing in, creating a record) with \`use:\` steps. Where the
+   user repeats a sequence (for example as another user, or with other data), use a \`repeat:\`
+   step instead of writing the steps again.
+5. Expected results come only from what the user said they saw. Never invent one: if the
+   transcript doesn't say, write \`Expected: TODO: what should happen?\` so it's easy to find.
+6. Set \`state: Design\` and leave \`ado_id\` blank. Put requirement ids in \`tests:\` only if the
+   transcript names them.
+7. Before writing files, list the cases you plan (title and one line each), any new blocks, and
+   your open questions: unclear steps, missing expected results, things that looked like bugs.
+   Ask for a go-ahead, then create the files and repeat the open questions at the end.
 `;
+
+  const CLAUDE_MD = `# Claude Code
+
+Instructions for this folder live in AGENTS.md, which other AI tools read too.
+
+@AGENTS.md
+`;
+
+  // Claude Code commands that run the workflows in AGENTS.md, so the steps live in one place.
+  const command = (description, hint, text) => `---
+description: ${description}
+${hint ? `argument-hint: "${hint}"\n` : ''}---
+
+${text}
+`;
+  const AUDIT = command('Review test cases for clarity, completeness and coverage gaps', '[case file, suite or requirement id; blank for all]',
+    'Follow the "Review cases" workflow in AGENTS.md for: $ARGUMENTS (if blank, everything in cases/).');
+  const DRAFT = command('Draft new test cases from a user story or acceptance criteria', '<user story, acceptance criteria, or what to test>',
+    'Follow the "Draft cases from a user story" workflow in AGENTS.md for:\n\n$ARGUMENTS');
+  const FIND_BLOCKS = command('Find repeated steps that should become reusable blocks', '',
+    'Follow the "Find steps worth reusing" workflow in AGENTS.md.');
+  const FROM_TRANSCRIPT = command('Turn a narrated test session in transcripts/ into test cases', '<transcript file; blank for the newest>',
+    'Follow the "Cases from a transcript" workflow in AGENTS.md for: $ARGUMENTS (if blank, the newest file in transcripts/).');
 
   const files = {
     'AGENTS.md': AGENTS_MD,
@@ -178,7 +214,26 @@ pointed at a replaced step so it points at the new \`use:\` step.
     '.claude/commands/audit.md': AUDIT,
     '.claude/commands/draft-case.md': DRAFT,
     '.claude/commands/find-blocks.md': FIND_BLOCKS,
+    '.claude/commands/from-transcript.md': FROM_TRANSCRIPT,
   };
+
+  // The version that first wrote each file, when later than 1.
+  const since = { '.claude/commands/from-transcript.md': 2 };
+
+  // Fingerprints of the files earlier versions of Stepwise wrote. A file that still matches one was
+  // never edited, so it's safe to replace with the new version.
+  const OLD = {
+    'AGENTS.md': ['9fd1ed5d', 'e611571c'],
+    'CLAUDE.md': ['0125c4c0'],
+    '.claude/commands/audit.md': ['cb8aa5b6'],
+    '.claude/commands/draft-case.md': ['38c7ab34'],
+    '.claude/commands/find-blocks.md': ['b77fbbc9'],
+  };
+  function fingerprint(text) {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193) >>> 0;
+    return h.toString(16).padStart(8, '0');
+  }
 
   // Earlier versions of Stepwise wrote the whole format guide into CLAUDE.md. That file is safe to
   // replace with the short version, as long as nobody has turned it into something else.
@@ -186,7 +241,57 @@ pointed at a replaced step so it points at the new \`use:\` step.
     return /^# Stepwise test cases\n/.test(text) && !text.includes('@AGENTS.md');
   }
 
-  const api = { files, isOldClaudeMd };
+  const WORKFLOWS = AGENTS_MD.slice(AGENTS_MD.indexOf('## Workflows'));
+  const hasWorkflows = text => typeof text === 'string' && text.includes('### Cases from a transcript');
+
+  // What to write, given the folder's current files (path -> text, or null when missing):
+  // [{ path, text, why: 'add' | 'update' | 'append' }]. Missing files are added. Files Stepwise wrote earlier
+  // and nobody edited are replaced. An edited AGENTS.md from Stepwise keeps its text and gets the
+  // workflows added at the end. Anything else is left alone.
+  function plan(existing) {
+    const out = [];
+    for (const [path, text] of Object.entries(files)) {
+      const now = existing[path];
+      if (now == null) out.push({ path, text, why: 'add' });
+      else if (now === text) continue;
+      else if ((OLD[path] || []).includes(fingerprint(now)) || (path === 'CLAUDE.md' && isOldClaudeMd(now))) out.push({ path, text, why: 'update' });
+      else if (path === 'AGENTS.md' && /^# Test cases \(Stepwise\)\n/.test(now) && !hasWorkflows(now)) {
+        out.push({ path, text: `${now.replace(/\s*$/, '')}\n\n${WORKFLOWS}`, why: 'append' });
+      }
+    }
+    return out;
+  }
+
+  // ---------- prompts ----------
+  // Short on purpose: the steps are in AGENTS.md, and a link only carries a few thousand characters.
+
+  const workflow = name => `Follow the "${name}" workflow in AGENTS.md`;
+  const prompts = {
+    open: () => '',
+    reviewCase: path => `${workflow('Review cases')} for ${path}.`,
+    reviewAll: () => `${workflow('Review cases')} for every case in cases/.`,
+    draft: () => `${workflow('Draft cases from a user story')}. Here's the story:\n\n`,
+    findBlocks: () => `${workflow('Find steps worth reusing')}.`,
+    transcript: path => `${workflow('Cases from a transcript')} for ${path}.`,
+  };
+
+  // The local date as 2026-10-17.
+  const dayOf = date => [date.getFullYear(), date.getMonth() + 1, date.getDate()].map(n => String(n).padStart(2, '0')).join('-');
+
+  // transcripts/<date>-<slug>.md: the name part, from a title the user gave (or none).
+  function transcriptName(title, date) {
+    const day = dayOf(date);
+    const slug = String(title || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60).replace(/-+$/, '');
+    return slug ? `${day}-${slug}` : `${day}-transcript`;
+  }
+
+  function transcriptFile(title, text, date) {
+    const heading = String(title || '').trim() || 'Test session';
+    return `# ${heading}\n\nNarrated test session, saved by Stepwise on ${dayOf(date)}.\n\n---\n\n${String(text).replace(/\r\n?/g, '\n').trim()}\n`;
+  }
+
+  const api = { VERSION, files, since, plan, hasWorkflows, isOldClaudeMd, fingerprint, prompts, transcriptName, transcriptFile };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.StepwiseWorkspace = api;
 })(typeof window !== 'undefined' ? window : globalThis);

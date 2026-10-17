@@ -109,3 +109,33 @@ assert.strictEqual(S.writeCase(S.parseCase('custom', written), bt), written);
 const cb = S.parseBlock('b', `---\ntitle: Block\nversion: 3\n---\n\n## Steps\n\n1. One \`#bk01\`\n`);
 assert.match(S.writeBlock(cb), /^---\ntitle: Block\nversion: 3\n---/);
 console.log('unknown frontmatter ok');
+
+// AI instruction files: what gets added or updated in a folder
+const W = require('./src/workspace.js');
+const all = Object.keys(W.files);
+assert.deepStrictEqual(W.plan({}).map(f => `${f.path}:${f.why}`), all.map(p => `${p}:add`));
+assert.deepStrictEqual(W.plan({ ...W.files }), []);
+for (const name of ['Review cases', 'Draft cases from a user story', 'Find steps worth reusing', 'Cases from a transcript']) {
+  assert.ok(W.files['AGENTS.md'].includes(`### ${name}\n`), 'AGENTS.md has ' + name);
+  assert.ok(Object.values(W.prompts).some(p => p('cases/x.md').includes(`"${name}" workflow in AGENTS.md`)), 'a prompt uses ' + name);
+  assert.ok(Object.values(W.files).some(t => t.startsWith('---') && t.includes(`"${name}" workflow in AGENTS.md`)), 'a command uses ' + name);
+}
+// an AGENTS.md from an older Stepwise that someone edited keeps their text and gets the workflows
+const olderAgents = W.files['AGENTS.md'].slice(0, W.files['AGENTS.md'].indexOf('## Workflows')).trimEnd() + '\n\n## Our notes\n\nUse the staging tenant.\n';
+const appended = W.plan({ ...W.files, 'AGENTS.md': olderAgents });
+assert.deepStrictEqual(appended.map(f => f.why), ['append']);
+assert.ok(appended[0].text.startsWith(olderAgents.trimEnd()) && W.hasWorkflows(appended[0].text));
+// someone else's AGENTS.md and edited commands are left alone
+assert.deepStrictEqual(W.plan({ ...W.files, 'AGENTS.md': '# Our repo\n', '.claude/commands/audit.md': 'mine\n' }), []);
+// an old full-guide CLAUDE.md is replaced, a CLAUDE.md someone wrote isn't
+assert.deepStrictEqual(W.plan({ ...W.files, 'CLAUDE.md': '# Stepwise test cases\n\nold guide\n' }).map(f => f.why), ['update']);
+assert.deepStrictEqual(W.plan({ ...W.files, 'CLAUDE.md': '# Mine\n' }), []);
+assert.ok(W.fingerprint('') === '811c9dc5');
+// prompts stay short enough for a link, and transcript files get safe names
+for (const p of Object.values(W.prompts)) assert.ok(p('transcripts/2026-10-17-x.md').length < 300);
+const day = new Date(2026, 9, 17, 23, 30);
+assert.strictEqual(W.transcriptName('Expense approval — iPhone café!', day), '2026-10-17-expense-approval-iphone-cafe');
+assert.strictEqual(W.transcriptName('  ', day), '2026-10-17-transcript');
+assert.match(W.transcriptName('x'.repeat(200), day), /^2026-10-17-x{60}$/);
+assert.strictEqual(W.transcriptFile('', 'a\r\nb\r\n\n', day), '# Test session\n\nNarrated test session, saved by Stepwise on 2026-10-17.\n\n---\n\na\nb\n');
+console.log('workspace files ok');

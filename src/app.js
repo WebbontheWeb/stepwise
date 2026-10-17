@@ -368,7 +368,7 @@
     if (!info.setUp && !choice) {
       choice = await ask({
         title: `Set up “${info.name}” for Stepwise?`,
-        body: 'This adds cases/ and blocks/ folders, a stepwise.json settings file, and an AGENTS.md, CLAUDE.md and a few commands so Claude can work on the test cases with you. Nothing already in the folder is changed.',
+        body: 'This adds cases/ and blocks/ folders, a stepwise.json settings file, and an AGENTS.md, CLAUDE.md and a few commands so AI assistants such as Claude and Codex can work on the test cases with you. Nothing already in the folder is changed.',
         buttons: [{ label: 'Cancel' }, { label: 'Add sample cases too', value: 'sample' }, { label: 'Set up', value: 'empty', primary: true }],
       });
       if (!choice) return;
@@ -404,7 +404,7 @@
     LS.set('sw.mode', 'folder');
     await rememberFolder(opened.path);
     // Setting up a new folder (which says it adds these) counts as a yes.
-    await offerClaudeFiles(state.current, !info.setUp && !opts.entry);
+    await offerAiFiles(state.current, !info.setUp && !opts.entry);
     // Come back to the case you were on in this folder.
     const last = state.current && state.current.sel;
     state.sel = last;
@@ -549,47 +549,73 @@
     menu.style.left = `${Math.max(8, Math.min(r.left, innerWidth - menu.offsetWidth - 8))}px`;
   }
 
-  // AGENTS.md, CLAUDE.md and the commands let Claude (and other agents) work in the folder.
-  // Stepwise adds them only with your OK, asked once per folder, and never puts back ones you
-  // deleted. Only missing files are written.
-  async function offerClaudeFiles(entry, agreed) {
-    if (!entry || entry.claudeFiles != null) return;
-    const missing = [];
-    for (const path of Object.keys(window.StepwiseWorkspace.files)) if ((await readText(path).catch(() => null)) == null) missing.push(path);
-    if (!missing.length) {
-      entry.claudeFiles = true;
-      return saveFolders();
-    }
-    if (!agreed) {
-      const r = await ask({
-        title: 'Help Claude work in this folder?',
+  // AGENTS.md, CLAUDE.md and the Claude commands tell AI assistants how test cases are written here
+  // and hold the workflows the Work with AI prompts refer to. Stepwise adds them only with your OK,
+  // asked once per folder, and never puts back ones you deleted. When a newer Stepwise changes
+  // them, it offers the update once, and keeps any edits you made to AGENTS.md.
+  const W = window.StepwiseWorkspace;
+
+  async function aiFilesPlan() {
+    const existing = {};
+    for (const path of Object.keys(W.files)) existing[path] = await readText(path).catch(() => null);
+    return W.plan(existing);
+  }
+
+  function aiFilesList(todo) {
+    const what = { add: 'new', update: 'updated', append: 'adds the workflows at the end and keeps your text' };
+    return h('ul', { class: 'file-list' }, todo.map(f => h('li', {}, h('code', {}, f.path), ` (${what[f.why]})`)));
+  }
+
+  async function offerAiFiles(entry, agreed) {
+    if (!entry || entry.claudeFiles === false) return;
+    // The version of the files this folder was last asked about: 0 if never.
+    const since = entry.claudeFiles ? entry.filesVersion || 1 : 0;
+    if (since >= W.VERSION) return;
+    let todo = await aiFilesPlan();
+    // An update only adds files that are new since then, never ones you deleted.
+    if (since) todo = todo.filter(f => f.why !== 'add' || (W.since[f.path] || 1) > since);
+    if (todo.length && !agreed) {
+      const r = await ask(since ? {
+        title: 'Update the AI instructions in this folder?',
         body: h('div', {},
-          h('p', {}, 'Stepwise can add these files, which tell Claude Code how test cases are written here and add the /audit, /draft-case and /find-blocks commands:'),
-          h('ul', { class: 'file-list' }, missing.map(p => h('li', {}, h('code', {}, p)))),
+          h('p', {}, 'This version of Stepwise has new instructions for AI assistants, including how to turn a recorded test session into cases, and works with Codex as well as Claude. It can update these files:'),
+          aiFilesList(todo),
+          h('p', { class: 'help' }, 'Nothing else in the folder changes. You can do this later in Settings.')),
+        buttons: [{ label: 'Not now', value: 'no' }, { label: 'Update files', value: 'yes', primary: true }],
+      } : {
+        title: 'Help AI assistants work in this folder?',
+        body: h('div', {},
+          h('p', {}, 'Stepwise can add these files. They tell Claude, Codex and other assistants how test cases are written here, and hold the workflows Work with AI uses:'),
+          aiFilesList(todo),
           h('p', { class: 'help' }, 'Nothing else in the folder changes. You can add them later in Settings.')),
         buttons: [{ label: 'Don’t add', value: 'no' }, { label: 'Add files', value: 'yes', primary: true }],
       });
       if (!r) return; // closed without answering: ask again next time
       agreed = r === 'yes';
     }
-    entry.claudeFiles = agreed;
+    if (!since) entry.claudeFiles = !todo.length || agreed;
+    entry.filesVersion = W.VERSION;
     saveFolders();
-    if (agreed) await addClaudeFiles();
+    if (todo.length && agreed) await writeAiFiles(todo);
   }
 
-  async function addClaudeFiles() {
-    const W = window.StepwiseWorkspace;
-    let added = 0;
+  // Adds or updates every file that needs it, including ones deleted earlier: you asked for them.
+  async function addAiFiles() {
+    const n = await writeAiFiles(await aiFilesPlan());
+    if (state.current) Object.assign(state.current, { claudeFiles: true, filesVersion: W.VERSION });
+    saveFolders();
+    return n;
+  }
+
+  async function writeAiFiles(todo) {
+    let n = 0;
     try {
-      for (const [path, text] of Object.entries(W.files)) {
-        const existing = await readText(path);
-        if (existing == null || (path === 'CLAUDE.md' && W.isOldClaudeMd(existing))) { await writeFile(path, text); added++; }
-      }
+      for (const f of todo) { await writeFile(f.path, f.text); n++; }
     } catch (e) {
       console.error(e);
-      toast(`Couldn't add the files for Claude: ${e}`);
+      toast(`Couldn't write the AI instruction files: ${e}`);
     }
-    return added;
+    return n;
   }
 
   // ---------- changes made outside the app ----------
@@ -1926,11 +1952,10 @@
         class: 'link', type: 'button',
         async onclick() {
           $('#dialog').close();
-          const n = await addClaudeFiles();
-          if (state.current) { state.current.claudeFiles = true; saveFolders(); }
-          toast(n ? `Added ${plural(n, 'file')} for Claude` : 'The files for Claude are all there already');
+          const n = await addAiFiles();
+          toast(n ? `Added or updated ${plural(n, 'file')} for AI assistants` : 'The AI instruction files are up to date');
         },
-      }, 'Add the files Claude Code uses'), ' (AGENTS.md, CLAUDE.md and the /audit, /draft-case and /find-blocks commands) where they’re missing.') : null;
+      }, 'Add or update the AI instruction files'), ' (AGENTS.md, CLAUDE.md and the Claude commands). Edits you made to AGENTS.md are kept.') : null;
     const r = await ask({
       title: 'Settings',
       body: h('div', {}, h('p', {}, 'Your Azure DevOps project URL. Used to make work item IDs clickable. Saved in stepwise.json.'), addFiles),
