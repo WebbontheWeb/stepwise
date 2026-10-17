@@ -32,6 +32,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="v$(node -p "require('./package.json').version")"
+          # A pushed tag must name the version being built, or the release would be mislabeled.
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "$tag" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match package.json version ($tag). Bump the version or fix the tag."
+            exit 1
+          fi
           id=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq ".[] | select(.tag_name == \"$tag\") | .id" | head -n 1)
           if [ -z "$id" ]; then
             body="Download the installer for your computer below. These builds aren't code-signed yet, so the first launch needs an extra step: see \"Install\" in the README."
