@@ -511,7 +511,15 @@
       const el = document.querySelector(`#main [data-key="${CSS.escape(key)}"]`);
       if (el) {
         el.focus({ preventScroll: true });
-        try { if (start != null) el.setSelectionRange(start, end); } catch (e) { /* not a text field */ }
+        if (el.isContentEditable) {
+          const r = document.createRange();
+          r.selectNodeContents(el);
+          r.collapse(false);
+          getSelection().removeAllRanges();
+          getSelection().addRange(r);
+        } else {
+          try { if (start != null) el.setSelectionRange(start, end); } catch (e) { /* not a text field */ }
+        }
       }
     }
   }
@@ -539,11 +547,73 @@
       oninput(e) { item[key] = e.target.value; touch(item); },
     });
   }
-  function textArea(item, key, placeholder) {
-    return h('textarea', {
-      class: 'field', rows: 2, value: item[key] || '', placeholder, 'data-key': key,
-      oninput(e) { item[key] = e.target.value; touch(item); },
+  function textArea(item, key, placeholder, label) {
+    return richField({ value: item[key], placeholder, label, key, cls: 'field', onChange(v) { item[key] = v; touch(item); } });
+  }
+
+  // A formatted-text field: ⌘B bold, ⌘I italic, stored as Markdown (**bold**, *italic*).
+  function richField({ value, onChange, placeholder, key, label, cls, onKeydown }) {
+    const el = h('div', {
+      class: `rich ${cls}`, contenteditable: 'true', role: 'textbox', 'aria-multiline': 'true',
+      'aria-label': label || placeholder, 'data-placeholder': placeholder, 'data-key': key,
     });
+    el.innerHTML = S.inlineToHtml(value);
+    el.addEventListener('input', () => {
+      if (!el.textContent) el.innerHTML = ''; // lets the placeholder show again
+      onChange(domToInline(el));
+    });
+    el.addEventListener('keydown', e => {
+      if (onKeydown) onKeydown(e);
+      if (e.defaultPrevented) return;
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && !e.altKey && !e.shiftKey && (e.key === 'b' || e.key === 'i')) {
+        e.preventDefault();
+        document.execCommand(e.key === 'b' ? 'bold' : 'italic');
+      } else if (mod && e.key === 'u') {
+        e.preventDefault(); // underline isn't kept in the files, so don't offer it
+      } else if (e.key === 'Enter' && !mod) {
+        e.preventDefault();
+        document.execCommand('insertLineBreak');
+      }
+    });
+    el.addEventListener('paste', e => {
+      e.preventDefault();
+      document.execCommand('insertText', false, e.clipboardData.getData('text/plain'));
+    });
+    el.addEventListener('drop', e => e.preventDefault());
+    return el;
+  }
+
+  // Turn the field's DOM back into Markdown: bold/italic runs, line breaks, literal * escaped.
+  function domToInline(root) {
+    const segs = [];
+    const walk = (node, b, i) => {
+      for (const n of node.childNodes) {
+        if (n.nodeType === Node.TEXT_NODE) { segs.push({ t: n.nodeValue.replace(/\u00a0/g, ' '), b, i }); continue; }
+        if (n.nodeType !== Node.ELEMENT_NODE) continue;
+        if (n.tagName === 'BR') { segs.push({ t: '\n', b: false, i: false }); continue; }
+        if (/^(DIV|P|LI)$/.test(n.tagName) && segs.length && !segs[segs.length - 1].t.endsWith('\n')) segs.push({ t: '\n', b: false, i: false });
+        const fw = n.style.fontWeight, fs = n.style.fontStyle;
+        const nb = /^(B|STRONG)$/.test(n.tagName) || (fw ? fw === 'bold' || +fw >= 600 : b);
+        const ni = /^(I|EM)$/.test(n.tagName) || (fs ? fs === 'italic' : i);
+        walk(n, nb, ni);
+      }
+    };
+    walk(root, false, false);
+    const wrap = (text, b, i) => {
+      text = text.replace(/\*/g, '\\*');
+      const m = text.match(/^(\s*)(.*?)(\s*)$/);
+      const mark = b && i ? '***' : b ? '**' : i ? '*' : '';
+      return m[2] && mark ? m[1] + mark + m[2] + mark + m[3] : text;
+    };
+    let out = '', cur = null;
+    const flush = () => { if (cur) out += cur.t.split('\n').map(part => wrap(part, cur.b, cur.i)).join('\n'); cur = null; };
+    for (const s of segs) {
+      if (cur && cur.b === s.b && cur.i === s.i) cur.t += s.t;
+      else { flush(); cur = { ...s }; }
+    }
+    flush();
+    return out.replace(/\n+$/, '');
   }
   function selectEl(item, key, options) {
     return h('select', {
@@ -581,8 +651,8 @@
           oninput(e) { c.tags = e.target.value.split(/[,;]/).map(t => t.trim()).filter(Boolean); touch(c); },
         }), 'wide')),
       h('div', { class: 'text-fields' },
-        field('Description', textArea(c, 'description', 'What this case checks and why')),
-        field('Preconditions', textArea(c, 'preconditions', 'Accounts, data and settings the steps assume'))),
+        field('Description', textArea(c, 'description', 'What this case checks and why', 'Description')),
+        field('Preconditions', textArea(c, 'preconditions', 'Accounts, data and settings the steps assume', 'Preconditions'))),
       renderSteps(c));
   }
 
@@ -604,7 +674,7 @@
       }),
       h('p', { class: 'help', style: 'margin-top:6px' }, 'Edits here show up in every test case that uses this block.'),
       h('div', { class: 'text-fields', style: 'grid-template-columns:1fr' },
-        field('Description', textArea(b, 'description', 'When to use this block'))),
+        field('Description', textArea(b, 'description', 'When to use this block', 'Description'))),
       renderSteps(b));
   }
 
@@ -641,7 +711,7 @@
       h('div', { class: 'steps-head' },
         h('h2', {}, 'Steps'),
         isCase ? h('span', { class: 'count', id: 'export-count' }, stepCountText(item)) : h('span', { class: 'count' }, plural(item.steps.length, 'step')),
-        h('span', { class: 'hint-keys' }, h('kbd', {}, '⌘'), h('kbd', {}, '↵'), ' new step  ·  ', h('kbd', {}, '⌥'), h('kbd', {}, '↑↓'), ' move  ·  click a number to select')),
+        h('span', { class: 'hint-keys' }, h('kbd', {}, '⌘'), h('kbd', {}, '↵'), ' new step  ·  ', h('kbd', {}, '⌘'), h('kbd', {}, 'B'), ' bold  ·  ', h('kbd', {}, '⌥'), h('kbd', {}, '↑↓'), ' move  ·  click a number to select')),
       h('div', { class: 'colhead' }, h('span', {}, '#'), h('span', {}, 'Action'), h('span', {}, 'Expected result'), h('span', {})),
       rows.length ? rows : h('div', { class: 'empty-steps' }, 'No steps yet.'),
       addBtns,
@@ -754,11 +824,18 @@
     return row;
   }
 
+  // Formatted, read-only text (inlineToHtml escapes everything, then adds <strong>/<em>/<br>).
+  function richText(md, tag = 'span', props = {}) {
+    const el = h(tag, props);
+    el.innerHTML = S.inlineToHtml(md);
+    return el;
+  }
+
   function subRow(n, action, expected) {
     return h('div', { class: 'subrow' },
       h('span', { class: 'n' }, n),
-      h('span', {}, action || h('span', { class: 'none' }, 'No action')),
-      h('span', {}, expected || h('span', { class: 'none' }, '—')));
+      action ? richText(action) : h('span', { class: 'none' }, 'No action'),
+      expected ? richText(expected) : h('span', { class: 'none' }, '—'));
   }
 
   function expandRange(item, a, z) {
@@ -776,11 +853,11 @@
   }
 
   function stepArea(item, s, i, key, placeholder) {
-    return h('textarea', {
-      class: 'cell', rows: 1, value: s[key] || '', placeholder, 'data-key': `${s.id}:${key}`,
-      'aria-label': `Step ${i + 1} ${key === 'action' ? 'action' : 'expected result'}`,
-      oninput(e) { s[key] = e.target.value; touch(item); },
-      onkeydown(e) { stepKeys(e, item, s); },
+    return richField({
+      value: s[key], placeholder, cls: 'cell', key: `${s.id}:${key}`,
+      label: `Step ${i + 1} ${key === 'action' ? 'action' : 'expected result'}`,
+      onChange(v) { s[key] = v; touch(item); },
+      onKeydown(e) { stepKeys(e, item, s); },
     });
   }
 
@@ -1209,7 +1286,7 @@
       seq.push({ key: `a${i}`, label: `step ${i + 1} action`, text: r.action });
       seq.push({ key: `e${i}`, label: `step ${i + 1} expected result`, text: r.expected });
     });
-    const desc = [c.description, c.preconditions && `Preconditions:\n${c.preconditions}`].filter(Boolean).join('\n\n');
+    const desc = [c.description, c.preconditions && `**Preconditions:**\n${c.preconditions}`].filter(Boolean).join('\n\n');
     if (desc) seq.push({ key: 'desc', label: 'description', text: desc });
     return seq;
   }
@@ -1228,9 +1305,9 @@
         class: `copycell${i === pos ? ' next' : ''}`, type: 'button', title: `Copy ${label}`,
         async onclick() {
           // Copying a cell by hand also moves "Copy next" to the cell after it.
-          if (await copyText(text)) setPos(i + 1, `Copied ${label}.`);
+          if (await copyRich(text)) setPos(i + 1, `Copied ${label}.`);
         },
-      }, text);
+      }, richText(text));
     };
     const hasBlocks = c.steps.some(s => s.type === 'use');
     const hasRepeats = c.steps.some(s => s.type === 'repeat');
@@ -1243,11 +1320,11 @@
             class: 'btn primary cn-btn', type: 'button', 'data-key': 'copy-next',
             async onclick() {
               if (!next.text) return setPos(pos + 1, `Skipped ${next.label}: it’s empty.`);
-              if (await copyText(next.text)) setPos(pos + 1, `Copied ${next.label}.`);
+              if (await copyRich(next.text)) setPos(pos + 1, `Copied ${next.label}.`);
             },
           }, icon('copy'), next.text ? `Copy ${next.label}` : `Skip ${next.label} (empty)`)
         : h('p', { class: 'allgood' }, icon('check'), `All ${seq.length} cells done`),
-      next && next.text ? h('div', { class: 'cn-next' }, next.text) : null,
+      next && next.text ? richText(next.text, 'div', { class: 'cn-next' }) : null,
       state.copyFlash ? h('p', { class: 'cn-done', role: 'status' }, state.copyFlash) : null,
       h('div', { class: 'cn-actions' },
         h('button', { class: 'btn small', type: 'button', disabled: pos === 0, onclick: () => setPos(pos - 1) }, 'Back'),
@@ -1405,6 +1482,20 @@
   }
 
   // ---------- output ----------
+
+  // Puts both formatted (HTML) and plain text on the clipboard, so bold survives a paste into ADO.
+  async function copyRich(md) {
+    const plain = S.inlineToPlain(md);
+    try {
+      await navigator.clipboard.write([new ClipboardItem({
+        'text/plain': new Blob([plain], { type: 'text/plain' }),
+        'text/html': new Blob([S.inlineToHtml(md)], { type: 'text/html' }),
+      })]);
+      return true;
+    } catch (e) {
+      return copyText(plain);
+    }
+  }
 
   async function copyText(text) {
     try {

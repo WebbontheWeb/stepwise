@@ -217,6 +217,29 @@
     }).join('\n');
   }
 
+  // ---------- inline formatting ----------
+  // Step text and descriptions may use **bold** and *italic*. \* is a literal asterisk.
+
+  const STAR = '\u0000';
+  function escapeHtml(t) {
+    return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  function inlineToHtml(md) {
+    return escapeHtml(md || '').replace(/\\\*/g, STAR)
+      .replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*(.+?)\*/g, '<em>$1</em>')
+      .replace(/\n/g, '<br>')
+      .split(STAR).join('*');
+  }
+  function inlineToPlain(md) {
+    return String(md || '').replace(/\\\*/g, STAR)
+      .replace(/\*\*\*(.+?)\*\*\*/g, '$1')
+      .replace(/\*\*(.+?)\*\*/g, '$1')
+      .replace(/\*(.+?)\*/g, '$1')
+      .split(STAR).join('*');
+  }
+
   // ---------- documents ----------
 
   function parseCase(id, text) {
@@ -383,6 +406,7 @@
 
   /** Tab-separated rows for pasting into the Azure Test Plans grid view. */
   function toGridTSV(c, rows, opts = {}) {
+    rows = rows.map(r => ({ ...r, action: inlineToPlain(r.action), expected: inlineToPlain(r.expected) }));
     const lines = [];
     if (opts.header) lines.push(['Title', 'Step Action', 'Step Expected Result']);
     if (opts.titleRow === 'first' && rows.length) {
@@ -401,7 +425,7 @@
     const lines = [CSV_HEADER];
     for (const c of cases) {
       lines.push([c.ado_id, 'Test Case', c.title, '', '', '', c.area, c.assigned, c.state, c.priority, c.tags.join('; ')]);
-      flatten(project, c, opts).forEach((r, i) => lines.push(['', '', '', i + 1, r.action, r.expected, '', '', '', '', '']));
+      flatten(project, c, opts).forEach((r, i) => lines.push(['', '', '', i + 1, inlineToPlain(r.action), inlineToPlain(r.expected), '', '', '', '', '']));
     }
     return '﻿' + lines.map(l => l.map(v => cell(v, ',')).join(',')).join('\r\n') + '\r\n';
   }
@@ -568,7 +592,7 @@ per case, most important first, and offer concrete rewrites. Ask before making e
 
   const api = {
     CASE_FIELDS, STATES, stepId, slugify, uniqueSlug,
-    parseCase, writeCase, parseBlock, writeBlock, parseSteps, writeSteps, rangeLabel,
+    inlineToHtml, inlineToPlain, parseCase, writeCase, parseBlock, writeBlock, parseSteps, writeSteps, rangeLabel,
     createProject, blockTitleFn, resolveReferences, newStep, relatedOf, blockUsage, coverage,
     flatten, toGridTSV, toCSV, lintCase, lintBlock, worstLevel, auditBundle, AUDIT_PROMPT, CLAUDE_MD,
   };

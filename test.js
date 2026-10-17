@@ -74,3 +74,11 @@ assert.strictEqual(once[3].action, 'Repeat steps 1–2 (Log in as an employee)')
 assert.strictEqual(once[3].expected, 'Same results as steps 1–2');
 delete p.cases.twice;
 console.log('block once ok');
+
+// inline formatting: **bold**, *italic*, escaped \* and HTML stay safe
+assert.strictEqual(S.inlineToHtml('Click **Save** and *wait*'), 'Click <strong>Save</strong> and <em>wait</em>');
+assert.strictEqual(S.inlineToHtml('2 \\* 3 <b>'), '2 * 3 &lt;b&gt;');
+assert.strictEqual(S.inlineToPlain('Click **Save**\nthen *wait*'), 'Click Save\nthen wait');
+const boldCase = S.parseCase('b', `---\ntitle: B\n---\n\n## Steps\n\n1. Click **Save** \`#bb01\`\n   Expected: A *toast* appears\n`);
+assert.match(S.toGridTSV(boldCase, S.flatten(p, boldCase), {}), /\tClick Save\tA toast appears/);
+console.log('formatting ok');
