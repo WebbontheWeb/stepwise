@@ -176,7 +176,7 @@ happen?` instead), and lists its open questions. It shows you the plan before wr
 
 | | macOS | Windows | Linux |
 | --- | --- | --- | --- |
-| Claude (desktop app) | Checked (Claude 2.42304): opens a session in the folder after you confirm it | Supported by Claude, not tested | Supported by Claude, not tested |
+| Claude (desktop app) | Checked (Claude 2.42304): opens a session in the folder after you confirm it | Supported by Claude, not tested | Not tested, and we don't know of a Claude desktop app for Linux: Stepwise says so if nothing handles the link |
 | Claude Code (terminal) | Checked (Claude Code 2.1.302): Terminal opens with `claude` in the folder and the prompt passed in, after its folder-trust question | Supported by Claude Code, not tested | Supported by Claude Code, not tested |
 | Codex | Opens the Codex app (inside ChatGPT 26.1013); folder and prompt not checked on screen | Codex app exists, not tested | No Codex app yet: Stepwise says so |
 
