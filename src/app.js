@@ -1768,11 +1768,11 @@
     const s = term.sessions.get(state.root) || createSession(state.root);
     for (const o of term.sessions.values()) o.el.hidden = o !== s;
     renderTermHead();
-    requestAnimationFrame(() => {
-      fitTerm(s);
-      if (focus) s.xterm.focus();
-      startSession(s);
-    });
+    // No requestAnimationFrame here: it doesn't run while the window is hidden, and the shell
+    // should start anyway (reading the size lays the panel out).
+    fitTerm(s);
+    if (focus) s.xterm.focus();
+    startSession(s);
   }
 
   function renderTermHead() {
@@ -1938,7 +1938,9 @@
     setTermHeight(term.height + (e.key === 'ArrowUp' ? 24 : -24));
     LS.set('sw.termH', term.height);
   });
-  new ResizeObserver(() => requestAnimationFrame(() => fitTerm(term.sessions.get(state.root)))).observe($('#term-body'));
+  new ResizeObserver(() => fitTerm(term.sessions.get(state.root))).observe($('#term-body'));
+  // A terminal started while the window was hidden couldn't measure its font yet.
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') fitTerm(term.sessions.get(state.root)); });
   darkQuery.addEventListener('change', () => { for (const s of term.sessions.values()) s.xterm.options.theme = termTheme(); });
 
   async function settingsDialog() {
