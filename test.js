@@ -1,5 +1,5 @@
-const S = require('./core.js');
-const files = require('./sample.js');
+const S = require('./src/core.js');
+const files = require('./src/sample.js');
 const assert = require('assert');
 const p = S.createProject();
 for (const [path, text] of Object.entries(files)) {

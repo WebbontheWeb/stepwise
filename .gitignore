@@ -12,3 +12,9 @@ Thumbs.db
 
 # Local Claude Code settings
 .claude/settings.local.json
+
+# Build output and dependencies
+node_modules/
+src/vendor/
+src-tauri/target/
+src-tauri/gen/
