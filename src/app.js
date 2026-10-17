@@ -61,33 +61,21 @@
     set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* storage unavailable */ } },
   };
 
-  function idb(mode, fn) {
-    return new Promise((resolve, reject) => {
-      const open = indexedDB.open('stepwise', 1);
-      open.onupgradeneeded = () => open.result.createObjectStore('kv');
-      open.onerror = () => reject(open.error);
-      open.onsuccess = () => {
-        const tx = open.result.transaction('kv', mode);
-        const req = fn(tx.objectStore('kv'));
-        tx.oncomplete = () => resolve(req && req.result);
-        tx.onerror = () => reject(tx.error);
-      };
-    });
-  }
-  const idbGet = k => idb('readonly', s => s.get(k)).catch(() => null);
-  const idbSet = (k, v) => idb('readwrite', s => s.put(v, k)).catch(() => {});
+  // The Rust side of the app (src-tauri) reads and writes files, keeps the folder list and runs terminals.
+  const invoke = (cmd, args) => window.__TAURI__.core.invoke(cmd, args);
+  const listen = (event, fn) => window.__TAURI__.event.listen(event, e => fn(e.payload));
 
   const firstLine = t => String(t || '').split('\n')[0];
   const clip = (t, n = 48) => (t.length > n ? t.slice(0, n - 1) + '…' : t);
   const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
-  const canPickFolder = 'showDirectoryPicker' in window;
+  const baseName = p => String(p || '').split(/[\\/]/).filter(Boolean).pop() || String(p || '');
 
   // ---------- state ----------
 
   const state = {
     project: S.createProject(),
     mode: 'demo',
-    dir: null,
+    root: null,
     folders: [],
     current: null,
     sel: null,
@@ -100,10 +88,8 @@
     collapsed: new Set(LS.get('sw.collapsed', [])),
     dirty: new Set(),
     deleted: new Set(),
-    mtimes: {},
     saveTimer: null,
     saveState: 'saved',
-    scanning: false,
     drag: null,
     copyPos: {},
     changed: new Set(),
@@ -173,49 +159,15 @@
     return item ? [pathOf(item), serialize(item)] : [null, null];
   }
 
-  async function dirFor(path, create) {
-    const parts = path.split('/');
-    let d = state.dir;
-    for (const part of parts.slice(0, -1)) d = await d.getDirectoryHandle(part, { create });
-    return [d, parts[parts.length - 1]];
-  }
-  async function writeFile(path, text) {
-    const [d, name] = await dirFor(path, true);
-    const fh = await d.getFileHandle(name, { create: true });
-    const w = await fh.createWritable();
-    await w.write(text);
-    await w.close();
-    state.mtimes[path] = (await fh.getFile()).lastModified;
-  }
-  async function removeFile(path) {
-    try {
-      const [d, name] = await dirFor(path, false);
-      await d.removeEntry(name);
-    } catch (e) {
-      if (e.name !== 'NotFoundError') throw e;
-    }
-    delete state.mtimes[path];
-  }
-  async function fileExists(name) {
-    try { await state.dir.getFileHandle(name); return true; } catch (e) { return false; }
-  }
-  async function readFolder() {
-    const out = {};
-    for (const sub of ['cases', 'blocks']) {
-      let d;
-      try { d = await state.dir.getDirectoryHandle(sub); } catch (e) { continue; }
-      for await (const [name, handle] of d.entries()) {
-        if (handle.kind !== 'file' || !name.endsWith('.md')) continue;
-        const f = await handle.getFile();
-        out[`${sub}/${name}`] = { text: await f.text(), mtime: f.lastModified };
-      }
-    }
-    try {
-      const f = await (await state.dir.getFileHandle('stepwise.json')).getFile();
-      out['stepwise.json'] = { text: await f.text(), mtime: f.lastModified };
-    } catch (e) { /* optional */ }
-    return out;
-  }
+  // Paths are relative to the open folder; the Rust side refuses anything outside it.
+  const writeFile = (path, text) => invoke('write_text', { path, text });
+  const removeFile = path => invoke('remove_file', { path });
+  const readText = path => invoke('read_text', { path });
+  const keyOf = path => {
+    if (path === 'stepwise.json') return 'settings';
+    const m = path.match(/^(cases|blocks)\/(.+)\.md$/);
+    return m ? `${m[1] === 'cases' ? 'case' : 'block'}:${m[2]}` : null;
+  };
 
   // ---------- saving ----------
 
@@ -235,23 +187,31 @@
     state.deleted.clear();
     if (!keys.length && !deleted.length) return;
     setSave('saving');
-    try {
-      if (state.mode === 'folder') {
-        for (const key of keys) {
-          const [path, text] = fileFor(key);
-          if (path) await writeFile(path, text);
+    let failed = false;
+    if (state.mode === 'folder') {
+      for (const key of keys) {
+        const [path, text] = fileFor(key);
+        if (!path) continue;
+        try {
+          await writeFile(path, text);
+        } catch (err) {
+          // Changed outside Stepwise since it was loaded: the outside version wins and arrives
+          // through the file watcher, so don't overwrite it.
+          if (err === 'changed-on-disk') continue;
+          state.dirty.add(key);
+          failed = true;
+          console.error(err);
         }
-        for (const path of deleted) await removeFile(path);
-      } else {
-        LS.set('sw.demo', allFiles());
       }
-      setSave(state.dirty.size ? 'pending' : 'saved');
-    } catch (err) {
-      keys.forEach(k => state.dirty.add(k));
-      deleted.forEach(p => state.deleted.add(p));
-      console.error(err);
-      setSave('error');
+      for (const path of deleted) {
+        try { await removeFile(path); } catch (err) { state.deleted.add(path); failed = true; console.error(err); }
+      }
+    } else {
+      LS.set('sw.demo', allFiles());
     }
+    setSave(failed ? 'error' : state.dirty.size ? 'pending' : 'saved');
+    const count = Object.keys(P().cases).length;
+    if (state.mode === 'folder' && state.current && state.current.cases !== count) { state.current.cases = count; saveFolders(); }
   }
 
   function setSave(s) {
@@ -264,78 +224,57 @@
 
   // ---------- opening folders ----------
 
-  async function openFolder(handle, opts = {}) {
-    if (!handle) {
-      try {
-        handle = await window.showDirectoryPicker({ id: 'stepwise', mode: 'readwrite' });
-      } catch (e) {
-        if (e.name !== 'AbortError') toast(`Couldn't open that folder: ${e.message}`);
-        return;
-      }
-    } else {
-      // After a restart Chrome asks again. If it doesn't grant access (prompt dismissed, blocked, or the
-      // folder moved), say so and offer the picker: choosing the folder there grants access again.
-      const name = opts.entry ? folderLabel(opts.entry) : handle.name;
-      const choose = { label: 'Choose folder', run: () => openFolder() };
-      let permission;
-      try {
-        permission = await handle.requestPermission({ mode: 'readwrite' });
-      } catch (e) {
-        console.error(e);
-        toast(`Couldn't reopen “${name}” (${e.message}). Choose it again.`, choose);
-        return;
-      }
-      if (permission !== 'granted') {
-        toast(`Chrome didn't allow access to “${name}”. Choose the folder to allow it.`, choose);
-        return;
-      }
+  async function openFolder(path, opts = {}) {
+    if (!path) {
+      path = await invoke('pick_folder');
+      if (!path) return;
+    }
+    const name = opts.entry ? folderLabel(opts.entry) : baseName(path);
+    const failed = e => toast(`Couldn't open “${name}”: ${e}`, opts.entry && { label: 'Remove from list', run: () => forgetFolder(opts.entry) });
+    let info;
+    try {
+      info = await invoke('folder_info', { path });
+    } catch (e) {
+      return failed(e);
+    }
+    // A folder counts as set up once it has stepwise.json or any cases or blocks, even if it's empty.
+    // Folders from the list were set up before, so just add back whatever's missing.
+    let choice = opts.entry ? 'empty' : null;
+    if (!info.setUp && !choice) {
+      choice = await ask({
+        title: `Set up “${info.name}” for Stepwise?`,
+        body: 'This adds cases/ and blocks/ folders, a stepwise.json settings file, and an AGENTS.md, CLAUDE.md and a few commands so Claude can work on the test cases with you. Nothing already in the folder is changed.',
+        buttons: [{ label: 'Cancel' }, { label: 'Add sample cases too', value: 'sample' }, { label: 'Set up', value: 'empty', primary: true }],
+      });
+      if (!choice) return;
     }
     await flush();
-    const prev = { dir: state.dir };
-    state.dir = handle;
-    // Keep test cases out of the app's own folder (and its public repository).
-    if ((await fileExists('core.js')) && (await fileExists('app.js')) && (await fileExists('index.html'))) {
-      state.dir = prev.dir;
-      const again = await ask({
-        title: 'That’s the Stepwise app folder',
-        body: 'Pick or create a separate folder for your test cases, so they never end up mixed in with the app’s code or published with it.',
-        buttons: [{ label: 'Cancel' }, { label: 'Choose another folder', value: 'again', primary: true }],
-      });
-      if (again) openFolder();
-      return;
-    }
-    let found;
+    let opened;
     try {
-      found = await readFolder();
-      // A folder counts as set up once it has stepwise.json or any cases or blocks, even if it's empty.
-      if (!Object.keys(found).length) {
-        const choice = await ask({
-          title: `Set up “${handle.name}” for Stepwise?`,
-          body: 'This adds cases/ and blocks/ folders, a stepwise.json settings file, and an AGENTS.md, CLAUDE.md and a few commands so Claude can work on the test cases with you. Nothing already in the folder is changed.',
-          buttons: [{ label: 'Cancel' }, { label: 'Add sample cases too', value: 'sample' }, { label: 'Set up', value: 'empty', primary: true }],
-        });
-        if (!choice) { state.dir = prev.dir; return; }
-        await handle.getDirectoryHandle('cases', { create: true });
-        await handle.getDirectoryHandle('blocks', { create: true });
-        if (!(await fileExists('stepwise.json'))) await writeFile('stepwise.json', JSON.stringify({ adoBaseUrl: '' }, null, 2) + '\n');
-        if (choice === 'sample') {
-          for (const [path, text] of Object.entries(window.StepwiseSample)) if (path !== 'stepwise.json') await writeFile(path, text);
+      opened = await invoke('open_workspace', { path: info.path, setup: !info.setUp });
+    } catch (e) {
+      return failed(e);
+    }
+    state.mode = 'folder';
+    state.root = opened.path;
+    try {
+      if (choice === 'sample' && !info.setUp) {
+        for (const [p, text] of Object.entries(window.StepwiseSample)) {
+          if (p === 'stepwise.json') continue;
+          await writeFile(p, text);
+          opened.files[p] = text;
         }
-        found = await readFolder();
       }
       await ensureWorkspace();
     } catch (e) {
-      state.dir = prev.dir;
-      toast(`Couldn't read that folder: ${e.message}`, opts.entry && { label: 'Remove from list', run: () => forgetFolder(opts.entry) });
-      return;
+      console.error(e);
+      toast(`Couldn't add Stepwise's files to the folder: ${e}`);
     }
-    state.mode = 'folder';
-    state.project = loadFiles(Object.fromEntries(Object.entries(found).map(([p, v]) => [p, v.text])));
-    state.mtimes = Object.fromEntries(Object.entries(found).map(([p, v]) => [p, v.mtime]));
+    state.project = loadFiles(opened.files);
     state.picked.clear();
     state.changed.clear();
     LS.set('sw.mode', 'folder');
-    await rememberFolder(handle);
+    await rememberFolder(opened.path);
     // Come back to the case you were on in this folder.
     const last = state.current && state.current.sel;
     state.sel = last;
@@ -343,17 +282,17 @@
     renderAll();
     $('#main').scrollTop = 0;
     setSave('saved');
-    toast(`Opened ${folderLabel(state.current)}`);
+    if (!opts.quiet) toast(`Opened ${folderLabel(state.current)}`);
   }
 
   // ---------- remembered folders ----------
-  // Kept in the browser's IndexedDB (the only place a page can keep folder access), never in a file,
-  // so the list can't end up in this app's repository or a test case folder.
+  // Kept by the Rust side as JSON in Stepwise's own settings folder, never in a file inside a
+  // repository or a test case folder.
 
-  const folderLabel = f => (f ? f.label || f.handle.name : '');
+  const folderLabel = f => (f ? f.label || baseName(f.path) : '');
   function folderSub(f) {
     const bits = [];
-    if (f.label && f.label !== f.handle.name) bits.push(f.handle.name);
+    if (f.label && f.label !== baseName(f.path)) bits.push(baseName(f.path));
     bits.push(plural(f.cases || 0, 'case'));
     if (f.ado) bits.push(f.ado);
     return bits.join(' · ');
@@ -365,15 +304,12 @@
     const parts = u.pathname.split('/').filter(Boolean).map(decodeURIComponent);
     return u.hostname === 'dev.azure.com' ? parts.join(' / ') : [u.hostname, ...parts].join(' / ');
   }
-  const saveFolders = () => idbSet('folders', state.folders);
+  const saveFolders = () => invoke('save_folders', { folders: state.folders }).catch(e => console.error(e));
 
-  async function rememberFolder(handle) {
-    let entry = null;
-    for (const f of state.folders) {
-      try { if (await f.handle.isSameEntry(handle)) { entry = f; break; } } catch (e) { /* stale handle */ }
-    }
-    if (!entry) state.folders.push(entry = { handle, label: '', sel: null });
-    Object.assign(entry, { handle, cases: Object.keys(P().cases).length, ado: adoLabel(P().settings.adoBaseUrl), opened: Date.now() });
+  async function rememberFolder(path) {
+    let entry = state.folders.find(f => f.path === path);
+    if (!entry) state.folders.push(entry = { path, label: '', sel: null });
+    Object.assign(entry, { cases: Object.keys(P().cases).length, ado: adoLabel(P().settings.adoBaseUrl), opened: Date.now() });
     state.folders.sort((a, b) => b.opened - a.opened);
     state.folders = state.folders.slice(0, 15);
     state.current = entry;
@@ -398,7 +334,7 @@
     });
     if (!r) return;
     const text = r.text.trim();
-    f.label = text && text !== f.handle.name ? text : '';
+    f.label = text && text !== baseName(f.path) ? text : '';
     saveFolders();
     renderTop();
   }
@@ -406,14 +342,15 @@
   function switchTo(f) {
     if ($('#switcher').matches(':popover-open')) $('#switcher').hidePopover();
     if (state.mode === 'folder' && f === state.current) return;
-    openFolder(f.handle, { entry: f });
+    openFolder(f.path, { entry: f });
   }
 
   async function switchToDemo() {
     $('#switcher').hidePopover();
     if (state.mode === 'demo') return;
     await flush();
-    Object.assign(state, { mode: 'demo', dir: null, current: null, mtimes: {} });
+    await invoke('close_workspace');
+    Object.assign(state, { mode: 'demo', root: null, current: null });
     state.changed.clear();
     state.picked.clear();
     state.project = loadFiles(LS.get('sw.demo', null) || window.StepwiseSample);
@@ -430,7 +367,7 @@
     const rows = state.folders.map(f => {
       const current = state.mode === 'folder' && f === state.current;
       return h('div', { class: 'menu-row' },
-        h('button', { class: 'menu-item', type: 'button', 'aria-current': current ? 'true' : null, onclick: () => switchTo(f) },
+        h('button', { class: 'menu-item', type: 'button', title: f.path, 'aria-current': current ? 'true' : null, onclick: () => switchTo(f) },
           check(current), text(folderLabel(f), folderSub(f))),
         iconBtn('pencil', `Rename ${folderLabel(f)}`, () => renameFolder(f)),
         iconBtn('x', `Remove ${folderLabel(f)} from this list`, () => forgetFolder(f)));
@@ -439,14 +376,11 @@
       h('div', { class: 'menu-head' }, 'Your folders'),
       ...(rows.length ? rows : [h('p', { class: 'menu-note' }, 'Folders you open show up here, so you can switch between them.')]),
       h('div', { class: 'menu-sep' }),
-      h('button', {
-        class: 'menu-item', type: 'button', disabled: !canPickFolder,
-        title: canPickFolder ? null : 'Opening folders needs Chrome or Edge',
-        onclick() { menu.hidePopover(); openFolder(); },
-      }, h('span', { class: 'mi-check' }, icon('plus')), text('Open another folder…')),
+      h('button', { class: 'menu-item', type: 'button', onclick() { menu.hidePopover(); openFolder(); } },
+        h('span', { class: 'mi-check' }, icon('plus')), text('Open another folder…')),
       h('button', { class: 'menu-item', type: 'button', 'aria-current': state.mode === 'demo' ? 'true' : null, onclick: switchToDemo },
-        check(state.mode === 'demo'), text('Sample project', 'Demo data, saved in this browser')),
-      h('p', { class: 'menu-note foot' }, 'This list is remembered by your browser, not saved in any file.'),
+        check(state.mode === 'demo'), text('Sample project', 'Demo data, kept inside Stepwise')),
+      h('p', { class: 'menu-note foot' }, 'Stepwise keeps this list in its own settings, never in a file in your folders.'),
     ]);
   }
 
@@ -459,8 +393,6 @@
     menu.style.left = `${Math.max(8, Math.min(r.left, innerWidth - menu.offsetWidth - 8))}px`;
   }
 
-  const isDataPath = p => /^(cases|blocks)\//.test(p) || p === 'stepwise.json';
-
   // Make the folder a workspace Claude (and other agents) can work in. Only writes missing files.
   async function ensureWorkspace() {
     const W = window.StepwiseWorkspace;
@@ -469,39 +401,48 @@
       if (existing == null || (path === 'CLAUDE.md' && W.isOldClaudeMd(existing))) await writeFile(path, text);
     }
   }
-  async function readText(path) {
-    try {
-      const [d, name] = await dirFor(path, false);
-      return await (await (await d.getFileHandle(name)).getFile()).text();
-    } catch (e) {
-      return null;
+
+  // ---------- changes made outside the app ----------
+  // The Rust side watches cases/, blocks/ and stepwise.json and reports edits made by Claude, a
+  // teammate or git (never the app's own writes), with each file's text before and after.
+
+  function applyChanges(changes) {
+    for (const { path, after } of changes) {
+      const key = keyOf(path);
+      if (!key) continue;
+      if (key === 'settings') {
+        let settings = {};
+        try { settings = JSON.parse(after || '{}'); } catch (e) { /* keep defaults */ }
+        P().settings = Object.assign(S.createProject().settings, settings);
+        continue;
+      }
+      const [kind, id] = key.split(':');
+      const map = kind === 'case' ? P().cases : P().blocks;
+      if (after == null) {
+        delete map[id];
+        state.changed.delete(key);
+      } else {
+        map[id] = kind === 'case' ? S.parseCase(id, after) : S.parseBlock(id, after);
+        state.changed.add(key);
+      }
     }
+    S.resolveReferences(P());
   }
 
-  // Pick up edits made outside the app (by Claude, a teammate, or git) when the window regains focus.
-  async function rescan() {
-    if (state.mode !== 'folder' || state.dirty.size || state.deleted.size || state.scanning) return;
-    state.scanning = true;
-    try {
-      const found = await readFolder();
-      const changedPaths = Object.entries(found).filter(([p, v]) => state.mtimes[p] !== v.mtime).map(([p]) => p);
-      const changed = changedPaths.length;
-      const removed = Object.keys(state.mtimes).filter(p => isDataPath(p) && !(p in found)).length;
-      if (!changed && !removed) return;
-      for (const p of changedPaths) {
-        const m = p.match(/^(cases|blocks)\/(.+)\.md$/);
-        if (m) state.changed.add(`${m[1] === 'cases' ? 'case' : 'block'}:${m[2]}`);
-      }
-      state.project = loadFiles(Object.fromEntries(Object.entries(found).map(([p, v]) => [p, v.text])));
-      state.mtimes = Object.fromEntries(Object.entries(found).map(([p, v]) => [p, v.mtime]));
-      if (state.sel && (state.sel.kind === 'case' || state.sel.kind === 'block') && !currentItem()) selectFirst();
-      renderAll();
-      toast(`Reloaded ${plural(changed + removed, 'file')} changed outside Stepwise`);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      state.scanning = false;
-    }
+  function onExternalChanges({ root, changes }) {
+    if (state.mode !== 'folder' || root !== state.root) return;
+    // The outside version wins over edits not saved yet.
+    for (const { path } of changes) state.dirty.delete(keyOf(path));
+    const cur = state.sel && `${state.sel.kind}:${state.sel.id}`;
+    applyChanges(changes);
+    if (!state.sel || ((state.sel.kind === 'case' || state.sel.kind === 'block') && !currentItem())) selectFirst();
+    else state.changed.delete(cur);
+    renderTop();
+    renderSide();
+    // Leave the editor alone (and the caret where it is) unless what it shows has changed.
+    if (changes.some(c => keyOf(c.path) === cur || c.path.startsWith('blocks/')) || !currentItem()) rerenderMain();
+    renderPanel();
+    toast(`Reloaded ${plural(changes.length, 'file')} changed outside Stepwise`);
   }
 
   // ---------- selection ----------
@@ -547,11 +488,9 @@
   function renderTop() {
     const proj = h('button', { class: 'proj', type: 'button', popovertarget: 'switcher', title: 'Switch folder (⌘O)' },
       icon('folder'),
-      h('span', { class: 'name' }, state.mode === 'folder' ? folderLabel(state.current) || state.dir.name : 'Sample project'),
-      state.mode === 'demo' ? h('span', { class: 'pill demo', title: 'Changes are kept in this browser only. Open a folder to save real files.' }, 'Demo') : null,
+      h('span', { class: 'name' }, state.mode === 'folder' ? folderLabel(state.current) || baseName(state.root) : 'Sample project'),
+      state.mode === 'demo' ? h('span', { class: 'pill demo', title: 'Changes are kept inside Stepwise only. Open a folder to save real files.' }, 'Demo') : null,
       icon('chevdown'));
-    // After a restart the browser asks again before reopening a folder, so offer it in one click.
-    const recent = state.mode === 'demo' && LS.get('sw.mode', 'folder') !== 'demo' ? state.folders[0] : null;
     $('#top').replaceChildren(...[
       h('button', { class: 'icon-btn only-narrow', type: 'button', title: 'Test cases', 'aria-label': 'Show test cases', onclick: () => toggleDrawer('side') }, icon('menu')),
       h('div', { class: 'brand' }, logo(), 'Stepwise'),
@@ -562,12 +501,8 @@
       h('button', { class: 'btn ghost', type: 'button', title: 'Work with Claude', onclick: claudeDialog }, icon('sparkle'), h('span', { class: 't-label' }, 'Work with Claude')),
       h('button', { class: 'btn ghost only-tiny', type: 'button', title: 'Links, checks and export', onclick: () => toggleDrawer('panel') }, icon('panel'), h('span', { class: 't-label' }, 'Details')),
       iconBtn('gear', 'Settings', settingsDialog),
-      recent ? h('button', { class: 'btn primary', type: 'button', onclick: () => switchTo(recent) }, icon('folder'), h('span', { class: 't-label' }, `Reopen ${clip(folderLabel(recent), 24)}`))
-        : state.mode === 'demo' ? h('button', {
-          class: 'btn primary', type: 'button',
-          disabled: !canPickFolder, title: canPickFolder ? 'Choose a folder to keep test cases in' : 'Opening folders needs Chrome or Edge',
-          onclick: () => openFolder(),
-        }, icon('folder'), h('span', { class: 't-label' }, 'Open folder')) : null,
+      state.mode === 'demo' ? h('button', { class: 'btn primary', type: 'button', title: 'Choose a folder to keep test cases in', onclick: () => openFolder() },
+        icon('folder'), h('span', { class: 't-label' }, 'Open folder')) : null,
     ].filter(Boolean));
     setSave(state.saveState);
   }
@@ -1526,7 +1461,7 @@
           }, icon('copy'), 'Copy for ADO grid'),
           h('button', {
             class: 'btn', type: 'button',
-            onclick() { download(`${c.id}.csv`, S.toCSV(P(), [c], state.exportOpts), 'text/csv'); },
+            onclick() { saveExport(`${c.id}.csv`, S.toCSV(P(), [c], state.exportOpts)); },
           }, icon('download'), 'CSV')),
         h('ol', { class: 'how' },
           h('li', {}, h('b', {}, 'Grid: '), 'in Test Plans, open the suite, switch to Grid view, click the first empty Title cell and paste. Save.'),
@@ -1608,49 +1543,18 @@
       title: 'Export CSV for ADO',
       body: h('p', {}, `For Test Plans → Import test cases from CSV. Blocks are ${{ inline: 'written out every time', once: 'written out once, then repeated by step number', name: 'named in one step' }[o.blocks]} and repeats ${o.repeats === 'text' ? 'say “Repeat steps …”' : 'are written out'} (change this on a case’s Export tab). The file also opens in Excel.`),
       extra: [h('span', { class: 'lbl' }, 'Which test cases'), scope],
-      buttons: [{ label: 'Cancel' }, { label: 'Download CSV', value: 'ok', primary: true }],
+      buttons: [{ label: 'Cancel' }, { label: 'Save CSV…', value: 'ok', primary: true }],
     });
     if (!r) return;
     const cases = scope.pick();
-    const name = state.mode === 'folder' ? S.slugify(state.dir.name) : 'stepwise';
-    download(`${name}-${new Date().toISOString().slice(0, 10)}.csv`, S.toCSV(P(), cases, o), 'text/csv');
-    toast(`Exported ${plural(cases.length, 'test case')}`);
+    const name = state.mode === 'folder' ? S.slugify(baseName(state.root)) : 'stepwise';
+    saveExport(`${name}-${new Date().toISOString().slice(0, 10)}.csv`, S.toCSV(P(), cases, o), plural(cases.length, 'test case'));
   }
 
   // ---------- Claude Code ----------
-  // Claude Code registers claude-cli://open?cwd=<folder>&q=<prompt>, which opens it in a terminal in that
-  // folder with the prompt typed in (you press Return). Pages can't see a folder's full path, so you paste
-  // it once; it's kept with the folder list in browser storage, never in a file.
 
-  function claudeLink(path, q) {
-    return `claude-cli://open?cwd=${encodeURIComponent(path)}${q ? `&q=${encodeURIComponent(q)}` : ''}`;
-  }
-
-  function launch(url) {
-    const a = h('a', { href: url });
-    document.body.append(a);
-    a.click();
-    a.remove();
-  }
-
-  // Opens Claude Code in the current folder, asking for the folder's path the first time.
-  function openClaude(q) {
-    const path = state.mode === 'folder' && state.current && state.current.path;
-    if (path) {
-      launch(claudeLink(path, q));
-      toast('Opening Claude Code…');
-    } else {
-      claudeDialog();
-    }
-  }
-
-  function checkPath(text, name) {
-    const path = text.trim().replace(/^['"]|['"]$/g, '').replace(/\/+$/, '');
-    if (!path.startsWith('/')) return { error: 'Paste the full path, starting with /.' };
-    if (/[\u0000-\u001f]/.test(path)) return { error: 'The path can’t contain line breaks or control characters.' };
-    if (path.split('/').includes('..')) return { error: 'The path can’t contain “..”.' };
-    if (path.split('/').pop() !== name) return { error: `That path ends in “${path.split('/').pop()}”, but this folder is called “${name}”.` };
-    return { path };
+  function openClaude() {
+    claudeDialog();
   }
 
   async function claudeDialog() {
@@ -1658,58 +1562,18 @@
       const r = await ask({
         title: 'Work on test cases with Claude',
         body: 'Claude works directly on your test case files, so open a folder first. Stepwise adds an AGENTS.md that explains the format, plus /audit, /draft-case and /find-blocks commands for Claude Code.',
-        buttons: [{ label: 'Close' }, ...(canPickFolder ? [{ label: 'Open folder', value: 'open', primary: true }] : [])],
+        buttons: [{ label: 'Close' }, { label: 'Open folder', value: 'open', primary: true }],
       });
       if (r === 'open') openFolder();
       return;
     }
-    if (!state.current) await rememberFolder(state.dir);
-    const entry = state.current;
-    const name = state.dir.name;
-
-    if (!entry.path) {
-      const err = h('p', { class: 'field-error', role: 'alert' });
-      const r = await ask({
-        title: 'Connect Claude Code to this folder',
-        body: h('div', {},
-          h('p', {}, `To open Claude Code right in “${name}”, Stepwise needs the folder’s full path. Browsers keep that hidden, so paste it once and Stepwise remembers it.`),
-          h('p', { class: 'help' }, 'In Finder, right-click the folder, hold ', h('kbd', {}, '⌥ Option'), ' and choose ', h('b', {}, `Copy “${name}” as Pathname`), '.')),
-        input: { placeholder: `/Users/you/…/${name}` },
-        extra: err,
-        buttons: [{ label: 'Cancel' }, { label: 'Save path', value: 'ok', primary: true }],
-        validate(text) {
-          const res = checkPath(text, name);
-          err.textContent = res.error || '';
-          return !res.error;
-        },
-      });
-      if (!r) return;
-      entry.path = checkPath(r.text, name).path;
-      await saveFolders();
-      return claudeDialog();
-    }
-
-    const cur = currentItem();
-    const action = (label, sub, q, primary) => h('a', {
-      class: primary ? 'claude-action primary' : 'claude-action', href: claudeLink(entry.path, q),
-      onclick() { setTimeout(() => $('#dialog').close(), 0); toast('Opening Claude Code…'); },
-    }, h('span', { class: 'ca-label' }, label), sub ? h('span', { class: 'ca-sub' }, sub) : null);
     // Single quotes so the shell treats the path literally (no $, ` or \ expansion).
-    const terminal = `cd '${entry.path.replace(/'/g, `'\\''`)}' && claude`;
+    const terminal = `cd '${state.root.replace(/'/g, `'\\''`)}' && claude`;
     await ask({
       title: 'Work on test cases with Claude',
       body: h('div', {},
-        h('div', { class: 'claude-actions' },
-          action('Open Claude Code here', `Starts in “${folderLabel(entry)}”`, '', true),
-          cur && cur.kind === 'case' ? action('Review this case', cur.title || cur.id, `/audit cases/${cur.id}.md`) : null,
-          action('Review all cases', 'Clarity, gaps and duplicates', '/audit'),
-          action('Draft cases from a user story', 'Type /draft-case, then paste the story', '/draft-case'),
-          action('Find steps worth reusing', 'Suggests new step blocks', '/find-blocks')),
-        h('p', { class: 'help' }, 'Claude Code opens in your terminal with the command typed in; press Return to run it. Stepwise reloads whatever Claude changes and marks those cases as updated.'),
-        h('p', { class: 'help' },
-          h('button', { class: 'link', type: 'button', async onclick() { if (await copyText(terminal)) toast('Copied. Paste it into a terminal.'); } }, 'Copy terminal command'),
-          ' · ',
-          h('button', { class: 'link', type: 'button', onclick() { entry.path = ''; saveFolders(); $('#dialog').close(); claudeDialog(); } }, 'Change folder path'))),
+        h('p', {}, 'Run Claude Code in this folder, then use /audit, /draft-case or /find-blocks. Stepwise reloads whatever Claude changes and marks those cases as updated.'),
+        h('p', { class: 'help' }, h('button', { class: 'link', type: 'button', async onclick() { if (await copyText(terminal)) toast('Copied. Paste it into a terminal.'); } }, 'Copy terminal command'))),
       buttons: [{ label: 'Close', value: 'ok', primary: true }],
     });
   }
@@ -1774,13 +1638,14 @@
     }
   }
 
-  function download(name, text, type) {
-    const url = URL.createObjectURL(new Blob([text], { type }));
-    const a = h('a', { href: url, download: name });
-    document.body.append(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  // Asks where to save the file (the Rust side shows the save dialog and writes it).
+  async function saveExport(name, text, what) {
+    try {
+      const path = await invoke('export_file', { name, text });
+      if (path) toast(what ? `Saved ${what} to ${baseName(path)}` : `Saved ${baseName(path)}`);
+    } catch (e) {
+      toast(`Couldn't save the file: ${e}`);
+    }
   }
 
   function toast(msg, action) {
@@ -1802,10 +1667,18 @@
     $('#switcher .menu-item[aria-current="true"], #switcher .menu-item')?.focus();
   });
   window.addEventListener('resize', () => { if ($('#switcher').matches(':popover-open')) placeSwitcher(); });
-  window.addEventListener('focus', rescan);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
-  window.addEventListener('beforeunload', e => {
-    if (state.dirty.size || state.deleted.size) { flush(); e.preventDefault(); }
+  // Web links (ADO work items, docs) open in the default browser rather than inside the app.
+  document.addEventListener('click', e => {
+    const a = e.target.closest && e.target.closest('a[href]');
+    if (!a || !/^https?:/i.test(a.href)) return;
+    e.preventDefault();
+    invoke('open_url', { url: a.href }).catch(err => toast(`Couldn't open the link: ${err}`));
+  });
+  listen('workspace-changed', onExternalChanges);
+  // Closing the window waits for the last edits to be saved.
+  listen('close-requested', async () => {
+    try { await flush(); } finally { invoke('quit'); }
   });
   document.addEventListener('keydown', e => {
     if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); flush(); }
@@ -1823,21 +1696,11 @@
     state.sel = saved;
     if (!saved || (saved.kind !== 'coverage' && !currentItem())) selectFirst();
     renderAll();
-    if (canPickFolder) {
-      let folders = await idbGet('folders');
-      if (!Array.isArray(folders)) {
-        const last = await idbGet('last');
-        folders = last ? [{ handle: last, label: '', sel: null, cases: 0, ado: '', opened: Date.now() }] : [];
-      }
-      state.folders = folders;
-      renderTop();
-      const first = folders[0];
-      if (first && LS.get('sw.mode', 'folder') !== 'demo') {
-        let granted = false;
-        try { granted = (await first.handle.queryPermission({ mode: 'readwrite' })) === 'granted'; } catch (e) { /* stale handle */ }
-        if (granted) await openFolder(first.handle, { entry: first });
-      }
-    }
+    state.folders = await invoke('load_folders').catch(() => []);
+    renderTop();
+    // Reopen the folder you were last working in.
+    const first = state.folders[0];
+    if (first && LS.get('sw.mode', 'folder') !== 'demo') await openFolder(first.path, { entry: first, quiet: true });
   }
   boot();
 })();
