@@ -273,10 +273,20 @@
         return;
       }
     } else {
+      // After a restart Chrome asks again. If it doesn't grant access (prompt dismissed, blocked, or the
+      // folder moved), say so and offer the picker: choosing the folder there grants access again.
+      const name = opts.entry ? folderLabel(opts.entry) : handle.name;
+      const choose = { label: 'Choose folder', run: () => openFolder() };
+      let permission;
       try {
-        if (await handle.requestPermission({ mode: 'readwrite' }) !== 'granted') return;
+        permission = await handle.requestPermission({ mode: 'readwrite' });
       } catch (e) {
-        toast("Couldn't reopen that folder. Choose it again.");
+        console.error(e);
+        toast(`Couldn't reopen “${name}” (${e.message}). Choose it again.`, choose);
+        return;
+      }
+      if (permission !== 'granted') {
+        toast(`Chrome didn't allow access to “${name}”. Choose the folder to allow it.`, choose);
         return;
       }
     }
@@ -394,7 +404,7 @@
   }
 
   function switchTo(f) {
-    $('#switcher').hidePopover();
+    if ($('#switcher').matches(':popover-open')) $('#switcher').hidePopover();
     if (state.mode === 'folder' && f === state.current) return;
     openFolder(f.handle, { entry: f });
   }
