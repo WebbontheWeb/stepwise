@@ -1,0 +1,14 @@
+# Test case data belongs in its own folder, never in this repo.
+/cases/
+/blocks/
+/stepwise.json
+*.csv
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local Claude Code settings
+.claude/settings.local.json
