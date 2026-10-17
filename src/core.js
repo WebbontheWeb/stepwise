@@ -52,15 +52,28 @@
     return v;
   }
 
-  function splitFrontmatter(text) {
+  /**
+   * Splits off the frontmatter. Keys not in `known` (added by a teammate, another tool or Claude)
+   * come back in `extra` as their original lines, with any indented or list lines under them, so
+   * they can be written back unchanged.
+   */
+  function splitFrontmatter(text, known) {
     text = String(text).replace(/\r\n?/g, '\n');
     const m = text.match(/^---\n([\s\S]*?)\n---[ \t]*(?:\n|$)/);
-    if (!m) return { meta: {}, body: text };
+    if (!m) return { meta: {}, body: text, extra: [] };
     const meta = {};
+    const extra = [];
+    let keepingLines = false;
     for (const line of m[1].split('\n')) {
+      const isKey = /^[A-Za-z_][\w.-]*\s*:/.test(line);
+      if (!isKey) {
+        if (keepingLines && line.trim()) extra.push(line);
+        continue;
+      }
       const i = line.indexOf(':');
-      if (i < 0) continue;
       const key = line.slice(0, i).trim();
+      keepingLines = known && !known.has(key);
+      if (keepingLines) { extra.push(line); continue; }
       let value = line.slice(i + 1).trim();
       if (LIST_FIELDS.has(key)) {
         value = value.replace(/^\[/, '').replace(/\]$/, '');
@@ -69,10 +82,10 @@
         meta[key] = unquote(value);
       }
     }
-    return { meta, body: text.slice(m[0].length) };
+    return { meta, body: text.slice(m[0].length), extra };
   }
 
-  function writeFrontmatter(pairs) {
+  function writeFrontmatter(pairs, extra) {
     const lines = ['---'];
     for (const [key, value] of pairs) {
       if (Array.isArray(value)) {
@@ -81,7 +94,7 @@
         lines.push(`${key}: ${quoteIfNeeded(value)}`.trimEnd());
       }
     }
-    lines.push('---');
+    lines.push(...(extra || []), '---');
     return lines.join('\n');
   }
 
@@ -242,8 +255,11 @@
 
   // ---------- documents ----------
 
+  const KNOWN_CASE_KEYS = new Set(CASE_FIELDS);
+  const KNOWN_BLOCK_KEYS = new Set(['title']);
+
   function parseCase(id, text) {
-    const { meta, body } = splitFrontmatter(text);
+    const { meta, body, extra } = splitFrontmatter(text, KNOWN_CASE_KEYS);
     const sections = splitSections(body);
     const take = name => {
       const i = sections.findIndex(s => s.heading.toLowerCase() === name);
@@ -269,28 +285,29 @@
       preconditions,
       steps: parseSteps(stepsText),
       extra: sections,
+      extraMeta: extra,
     };
   }
 
   function writeCase(c, blockTitle) {
-    const fm = writeFrontmatter(CASE_FIELDS.map(k => [k, c[k] ?? (LIST_FIELDS.has(k) ? [] : '')]));
+    const fm = writeFrontmatter(CASE_FIELDS.map(k => [k, c[k] ?? (LIST_FIELDS.has(k) ? [] : '')]), c.extraMeta);
     const parts = [fm, '', '## Description', '', c.description || '', '', '## Preconditions', '', c.preconditions || '', '', '## Steps', '', writeSteps(c.steps, blockTitle)];
     for (const s of c.extra || []) parts.push('', `## ${s.heading}`, '', s.content);
     return parts.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
   }
 
   function parseBlock(id, text) {
-    const { meta, body } = splitFrontmatter(text);
+    const { meta, body, extra } = splitFrontmatter(text, KNOWN_BLOCK_KEYS);
     const sections = splitSections(body);
     const get = name => (sections.find(s => s.heading.toLowerCase() === name) || {}).content || '';
     // Blocks hold plain steps only; nested references are flattened to text.
     const steps = parseSteps(get('steps')).map(s => s.type === 'action' ? s
       : { id: s.id, type: 'action', action: s.type === 'use' ? `Use block: ${s.block}` : (s.note || 'Repeat'), expected: s.expected || '' });
-    return { kind: 'block', id, title: meta.title || id, description: get('description'), steps };
+    return { kind: 'block', id, title: meta.title || id, description: get('description'), steps, extraMeta: extra };
   }
 
   function writeBlock(b) {
-    return [writeFrontmatter([['title', b.title]]), '', '## Description', '', b.description || '', '', '## Steps', '', writeSteps(b.steps, () => '')]
+    return [writeFrontmatter([['title', b.title]], b.extraMeta), '', '## Description', '', b.description || '', '', '## Steps', '', writeSteps(b.steps, () => '')]
       .join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
   }
 

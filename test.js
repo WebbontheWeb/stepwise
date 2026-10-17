@@ -96,3 +96,16 @@ assert.strictEqual(kinds(S.diffLines('1\n2\n3\n4', '0\n1\n3\n4\n5')), '+0| 1|-2|
 const big = S.diffLines(files['cases/expense-over-limit-approval.md'], files['cases/expense-over-limit-approval.md'].replace('$600', '$700'));
 assert.strictEqual(big.filter(l => l.type !== 'same').length, 2);
 console.log('diff ok');
+
+// frontmatter keys Stepwise doesn't know about are written back unchanged
+const custom = `---\ntitle: Custom keys\nowner: Pat Lee # QA lead\nado_id: 42\nlinks:\n  - https://example.com/a\n  - https://example.com/b\nreviewed: [2026-10-01, "x, y"]\n---\n\n## Steps\n\n1. Do it \`#cu01\`\n   Expected: Done\n`;
+const cc = S.parseCase('custom', custom);
+assert.strictEqual(cc.ado_id, '42');
+const written = S.writeCase(cc, bt);
+for (const line of ['owner: Pat Lee # QA lead', 'links:', '  - https://example.com/a', '  - https://example.com/b', 'reviewed: [2026-10-01, "x, y"]']) {
+  assert.ok(written.split('\n').includes(line), 'kept ' + line);
+}
+assert.strictEqual(S.writeCase(S.parseCase('custom', written), bt), written);
+const cb = S.parseBlock('b', `---\ntitle: Block\nversion: 3\n---\n\n## Steps\n\n1. One \`#bk01\`\n`);
+assert.match(S.writeBlock(cb), /^---\ntitle: Block\nversion: 3\n---/);
+console.log('unknown frontmatter ok');
