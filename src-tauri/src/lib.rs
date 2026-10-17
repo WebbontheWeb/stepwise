@@ -17,7 +17,9 @@ static CLOSE_HELD: AtomicBool = AtomicBool::new(false);
 #[tauri::command]
 async fn pick_folder(app: AppHandle) -> Option<String> {
     let picked = app.dialog().file().set_title("Choose a folder for your test cases").blocking_pick_folder()?;
-    picked.into_path().ok().map(|p| workspace::display(&p))
+    let path = workspace::display(&picked.into_path().ok()?);
+    app.state::<workspace::Allowed>().allow(&path);
+    Some(path)
 }
 
 /// Asks where to save an export and writes it there. Returns the chosen path, or None if cancelled.
@@ -90,6 +92,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(workspace::Workspace::default())
+        .manage(workspace::Allowed::default())
         .manage(terminal::Terminals::default())
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {

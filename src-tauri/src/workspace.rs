@@ -2,7 +2,7 @@
 //! made outside the app (by Claude Code, a teammate, or git).
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     io::{self, Write},
     path::{Component, Path, PathBuf},
@@ -26,6 +26,30 @@ struct Open {
 
 #[derive(Default)]
 pub struct Workspace(Mutex<Option<Open>>);
+
+/// Folders the window may open: ones chosen in the folder dialog or already in the saved folder
+/// list. The window can't point the app at any other path.
+#[derive(Default)]
+pub struct Allowed(Mutex<HashSet<PathBuf>>);
+
+impl Allowed {
+    pub fn allow(&self, path: &str) {
+        let mut set = self.0.lock().unwrap();
+        set.insert(PathBuf::from(path));
+        if let Ok(p) = dunce::canonicalize(path) {
+            set.insert(p);
+        }
+    }
+
+    pub fn contains(&self, path: &str) -> bool {
+        let set = self.0.lock().unwrap();
+        set.contains(Path::new(path)) || dunce::canonicalize(path).is_ok_and(|p| set.contains(&p))
+    }
+
+    pub fn check(&self, path: &str) -> Result<(), String> {
+        if self.contains(path) { Ok(()) } else { Err(format!("{path} wasn't chosen as a folder")) }
+    }
+}
 
 impl Workspace {
     fn with<T>(&self, f: impl FnOnce(&Open) -> Result<T, String>) -> Result<T, String> {
@@ -293,7 +317,8 @@ fn watch_subfolders(d: &mut Debouncer<RecommendedWatcher>, root: &Path) {
 }
 
 #[tauri::command]
-pub fn folder_info(path: String) -> Result<FolderInfo, String> {
+pub fn folder_info(allowed: State<Allowed>, path: String) -> Result<FolderInfo, String> {
+    allowed.check(&path)?;
     let root = canonical_dir(&path)?;
     let found = scan(&root);
     let set_up = !found.files.is_empty() || !found.skipped.is_empty();
@@ -303,7 +328,8 @@ pub fn folder_info(path: String) -> Result<FolderInfo, String> {
 /// Makes `path` the open folder, starts watching it, and returns its data files.
 /// With `setup`, first adds cases/, blocks/ and stepwise.json where they're missing.
 #[tauri::command]
-pub fn open_workspace(app: AppHandle, ws: State<Workspace>, path: String, setup: bool) -> Result<Opened, String> {
+pub fn open_workspace(app: AppHandle, ws: State<Workspace>, allowed: State<Allowed>, path: String, setup: bool) -> Result<Opened, String> {
+    allowed.check(&path)?;
     let root = canonical_dir(&path)?;
     if setup {
         fs::create_dir_all(root.join("cases")).map_err(err)?;
@@ -440,6 +466,19 @@ mod tests {
         assert!(check_base(&f, Some("theirs"), Some("x")).is_ok());
         assert!(check_base(&f, Some("old"), Some("theirs")).is_ok()); // already says what we'd write
         assert_eq!(check_base(&f, Some("old"), None), Err(CONFLICT.into())); // delete after a change
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn allowed_folders() {
+        let dir = std::env::temp_dir().join(format!("stepwise-allowed-{}", std::process::id()));
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        let allowed = Allowed::default();
+        allowed.allow(&display(&dir));
+        assert!(allowed.check(&display(&dir)).is_ok());
+        assert!(allowed.check(&format!("{}/sub/..", display(&dir))).is_ok()); // same folder
+        assert!(allowed.check(&display(&dir.join("sub"))).is_err());
+        assert!(allowed.check("/etc").is_err());
         fs::remove_dir_all(&dir).unwrap();
     }
 

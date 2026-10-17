@@ -4,7 +4,9 @@
 use std::{fs, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, State};
+
+use crate::workspace::Allowed;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Folder {
@@ -32,16 +34,22 @@ fn file(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-pub fn load_folders(app: AppHandle) -> Vec<Folder> {
-    file(&app)
+pub fn load_folders(app: AppHandle, allowed: State<Allowed>) -> Vec<Folder> {
+    let folders: Vec<Folder> = file(&app)
         .ok()
         .and_then(|f| fs::read_to_string(f).ok())
         .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    for f in &folders {
+        allowed.allow(&f.path);
+    }
+    folders
 }
 
 #[tauri::command]
-pub fn save_folders(app: AppHandle, folders: Vec<Folder>) -> Result<(), String> {
+pub fn save_folders(app: AppHandle, allowed: State<Allowed>, folders: Vec<Folder>) -> Result<(), String> {
+    // Only folders that were chosen in the dialog or were already on the list.
+    let folders: Vec<Folder> = folders.into_iter().filter(|f| allowed.contains(&f.path)).collect();
     let f = file(&app)?;
     if let Some(dir) = f.parent() {
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;

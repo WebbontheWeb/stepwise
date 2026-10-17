@@ -135,7 +135,15 @@ fn claude_installed(dir: &Path) -> bool {
 
 /// Starts the terminal for a folder, unless it's already running. `id` is the folder's path.
 #[tauri::command]
-pub async fn term_start(app: AppHandle, terms: State<'_, Terminals>, id: String, cols: u16, rows: u16) -> Result<Started, String> {
+pub async fn term_start(
+    app: AppHandle,
+    terms: State<'_, Terminals>,
+    allowed: State<'_, crate::workspace::Allowed>,
+    id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<Started, String> {
+    allowed.check(&id)?;
     let dir = dunce::canonicalize(&id).map_err(|e| format!("Couldn't find {id} ({e})"))?;
     if let Some(s) = terms.0.lock().unwrap().get(&id) {
         return Ok(Started { generation: s.generation, claude: true });
