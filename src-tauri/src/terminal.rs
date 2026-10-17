@@ -147,6 +147,15 @@ pub async fn term_start(app: AppHandle, terms: State<'_, Terminals>, id: String,
     let mut cmd = CommandBuilder::new(shell);
     cmd.args(args);
     cmd.cwd(&dir);
+    // If Stepwise itself was started from inside a Claude Code session, don't pass that session's
+    // markers on: this Claude Code is a session of its own. (The login shell sets up the user's
+    // own Claude Code settings again from their profile.)
+    for (key, _) in std::env::vars_os() {
+        let k = key.to_string_lossy();
+        if k == "CLAUDECODE" || k == "CLAUDE_PID" || k.starts_with("CLAUDE_CODE_") || k.starts_with("CLAUDE_AGENT_SDK_") {
+            cmd.env_remove(&key);
+        }
+    }
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     if std::env::var_os("LANG").is_none() {
