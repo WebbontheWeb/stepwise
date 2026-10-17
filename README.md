@@ -58,6 +58,10 @@ you need them there.
 
 On a case's **Export** tab:
 
+- **Copy one cell at a time**: for filling in a Test Case work item by hand (no Test Plans access
+  needed). Each click copies the next cell (title, then each step's action and expected result,
+  then the description) and moves on. Empty cells are skipped for you. After pasting, ⌘Tab back
+  and press Space to copy the next one.
 - **Copy for ADO grid**: in Test Plans, open the suite, switch to Grid view, click the first empty
   Title cell and paste.
 - **Click any cell** in the preview to copy just that cell.

@@ -100,6 +100,8 @@
     saveState: 'saved',
     scanning: false,
     drag: null,
+    copyPos: {},
+    copyFlash: null,
   };
   const P = () => state.project;
 
@@ -352,6 +354,7 @@
     state.sel = sel;
     state.picked.clear();
     state.anchor = null;
+    state.copyFlash = null;
     LS.set('sw.sel', sel);
     renderSide();
     renderMain();
@@ -1199,28 +1202,69 @@
     }, label)));
   }
 
+  // The cells you fill in on an ADO Test Case work item, in order.
+  function copySequence(c, rows) {
+    const seq = [{ key: 'title', label: 'title', text: c.title }];
+    rows.forEach((r, i) => {
+      seq.push({ key: `a${i}`, label: `step ${i + 1} action`, text: r.action });
+      seq.push({ key: `e${i}`, label: `step ${i + 1} expected result`, text: r.expected });
+    });
+    const desc = [c.description, c.preconditions && `Preconditions:\n${c.preconditions}`].filter(Boolean).join('\n\n');
+    if (desc) seq.push({ key: 'desc', label: 'description', text: desc });
+    return seq;
+  }
+
   function renderExport(c) {
     const rows = S.flatten(P(), c, state.exportOpts);
+    const seq = copySequence(c, rows);
+    const pos = Math.min(state.copyPos[c.id] || 0, seq.length);
+    const next = seq[pos];
+    const setPos = (p, flash) => { state.copyPos[c.id] = p; state.copyFlash = flash || null; renderPanel(); };
     const refresh = () => { renderPanel(); updateLiveLabels(); };
-    const copyCell = (text, label) => h('button', {
-      class: 'copycell', type: 'button', title: `Copy ${label}`,
-      async onclick(e) {
-        const el = e.currentTarget;
-        if (await copyText(text)) { el.classList.add('copied'); setTimeout(() => el.classList.remove('copied'), 700); }
-      },
-    }, text);
+    const indexOf = key => seq.findIndex(s => s.key === key);
+    const copyCell = (key, text, label) => {
+      const i = indexOf(key);
+      return h('button', {
+        class: `copycell${i === pos ? ' next' : ''}`, type: 'button', title: `Copy ${label}`,
+        async onclick() {
+          // Copying a cell by hand also moves "Copy next" to the cell after it.
+          if (await copyText(text)) setPos(i + 1, `Copied ${label}.`);
+        },
+      }, text);
+    };
     const hasBlocks = c.steps.some(s => s.type === 'use');
     const hasRepeats = c.steps.some(s => s.type === 'repeat');
+
+    const copyNext = h('div', { class: 'copynext' },
+      h('div', { class: 'cn-head' }, h('h3', {}, 'Copy one cell at a time'), h('span', { class: 'count' }, `${pos} of ${seq.length}`)),
+      h('p', { class: 'help' }, 'For filling in a Test Case work item. Each click copies the next cell. Tip: after pasting, ⌘Tab back here and press Space.'),
+      next
+        ? h('button', {
+            class: 'btn primary cn-btn', type: 'button', 'data-key': 'copy-next',
+            async onclick() {
+              if (!next.text) return setPos(pos + 1, `Skipped ${next.label}: it’s empty.`);
+              if (await copyText(next.text)) setPos(pos + 1, `Copied ${next.label}.`);
+            },
+          }, icon('copy'), next.text ? `Copy ${next.label}` : `Skip ${next.label} (empty)`)
+        : h('p', { class: 'allgood' }, icon('check'), `All ${seq.length} cells done`),
+      next && next.text ? h('div', { class: 'cn-next' }, next.text) : null,
+      state.copyFlash ? h('p', { class: 'cn-done', role: 'status' }, state.copyFlash) : null,
+      h('div', { class: 'cn-actions' },
+        h('button', { class: 'btn small', type: 'button', disabled: pos === 0, onclick: () => setPos(pos - 1) }, 'Back'),
+        h('button', { class: 'btn small', type: 'button', disabled: pos === 0, onclick: () => setPos(0) }, 'Start over')));
+
     return [
       h('div', { class: 'psec' },
         h('h3', {}, 'Send this case to ADO'),
         h('p', { class: 'help' }, 'Steps are numbered the way ADO will number them, so “Repeat steps” stays correct.'),
         hasBlocks ? h('div', { class: 'opt' }, h('span', { class: 'lbl' }, 'Blocks'), seg('blocks', [['inline', 'Write the steps out'], ['name', 'One step naming the block']], refresh)) : null,
         hasRepeats ? h('div', { class: 'opt' }, h('span', { class: 'lbl' }, 'Repeats'), seg('repeats', [['text', 'Say “Repeat steps 3–6”'], ['inline', 'Write the steps out again']], refresh)) : null,
+        copyNext,
+        h('div', { class: 'opt' }, h('span', { class: 'lbl' }, 'Or send it all at once (needs Test Plans access)')),
         h('div', { class: 'opt' }, h('span', { class: 'lbl' }, 'Title when pasting'), seg('titleRow', [['own', 'On its own row'], ['first', 'On the step 1 row']], refresh)),
         h('div', { class: 'export-actions' },
           h('button', {
-            class: 'btn primary', type: 'button',
+            class: 'btn', type: 'button',
             async onclick() { if (await copyText(S.toGridTSV(c, rows, state.exportOpts))) toast('Copied. Paste into the ADO grid view.'); },
           }, icon('copy'), 'Copy for ADO grid'),
           h('button', {
@@ -1229,17 +1273,19 @@
           }, icon('download'), 'CSV')),
         h('details', { class: 'how' }, h('summary', {}, 'How to bring this into ADO'),
           h('ol', {},
+            h('li', {}, h('b', {}, 'One cell at a time: '), 'create a Test Case work item, then use Copy one cell at a time and paste each cell into the title, the Steps grid and the description.'),
             h('li', {}, h('b', {}, 'Paste: '), 'in Test Plans, open the suite, switch to Grid view, click the first empty Title cell and paste. Save.'),
             h('li', {}, h('b', {}, 'CSV: '), 'in Test Plans, open the suite, choose Import test cases from CSV, and pick the file. Rows with an ADO ID update that case.'),
             h('li', {}, h('b', {}, 'Afterwards: '), 'put the new ADO ID into the case here so future CSVs update it instead of making a copy.'))),
         h('table', { class: 'preview' },
           h('thead', {}, h('tr', {}, h('th', {}, '#'), h('th', {}, 'Step action'), h('th', {}, 'Expected result'))),
           h('tbody', {},
-            h('tr', {}, h('td', { class: 'n' }, 'T'), h('td', { colspan: 2 }, copyCell(c.title, 'title'))),
+            h('tr', {}, h('td', { class: 'n' }, 'T'), h('td', { colspan: 2 }, copyCell('title', c.title, 'title'))),
             rows.map((r, i) => h('tr', { class: `k-${r.kind}`, title: r.block ? `From block: ${r.block}` : null },
               h('td', { class: 'n' }, i + 1),
-              h('td', {}, copyCell(r.action, `step ${i + 1} action`)),
-              h('td', {}, copyCell(r.expected, `step ${i + 1} expected result`)))))),
+              h('td', {}, copyCell(`a${i}`, r.action, `step ${i + 1} action`)),
+              h('td', {}, copyCell(`e${i}`, r.expected, `step ${i + 1} expected result`)))),
+            indexOf('desc') >= 0 ? h('tr', {}, h('td', { class: 'n' }, 'D'), h('td', { colspan: 2 }, copyCell('desc', seq[indexOf('desc')].text, 'description'))) : null)),
         h('div', { class: 'legend' }, h('span', {}, 'Click any cell to copy it.'), hasBlocks && h('span', { class: 'b' }, h('b', {}, '#'), ' from a block'), hasRepeats && h('span', { class: 'r' }, h('b', {}, '#'), ' repeat'))),
     ];
   }
