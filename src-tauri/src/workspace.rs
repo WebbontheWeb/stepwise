@@ -242,7 +242,58 @@ fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
     tmp.persist(path).map(|_| ()).map_err(|e| e.error)
 }
 
-type Watcher = Arc<Mutex<Option<Debouncer<RecommendedWatcher>>>>;
+/// The live watcher, plus which cases/ and blocks/ folders it watches (by identity, so a folder
+/// that's replaced, as in a git checkout, is noticed).
+struct Watches {
+    debouncer: Debouncer<RecommendedWatcher>,
+    subfolders: Subfolders,
+}
+
+type Watcher = Arc<Mutex<Option<Watches>>>;
+type Subfolders = HashMap<PathBuf, Option<u128>>;
+
+/// Something that tells one folder from another at the same path: the inode on Unix, the
+/// creation time elsewhere.
+fn dir_id(path: &Path) -> Option<u128> {
+    let meta = fs::symlink_metadata(path).ok().filter(|m| m.is_dir())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some((u128::from(meta.dev()) << 64) | u128::from(meta.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        meta.created().ok()?.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_nanos())
+    }
+}
+
+/// Which of cases/ and blocks/ need their watch changed: (folder, unwatch the old one, watch it).
+/// Records the new state in `watched`. Folders that are still the same need nothing, because
+/// re-adding a watch restarts the macOS event stream (missing events) and duplicates the path.
+fn subfolder_updates(root: &Path, watched: &mut Subfolders) -> Vec<(PathBuf, bool, bool)> {
+    let mut out = Vec::new();
+    for sub in ["cases", "blocks"] {
+        let dir = root.join(sub);
+        let now = dir_id(&dir);
+        let before = watched.get(&dir).copied().flatten();
+        if now != before {
+            out.push((dir.clone(), before.is_some(), now.is_some()));
+            watched.insert(dir, now);
+        }
+    }
+    out
+}
+
+fn update_subfolders(w: &mut Watches, root: &Path) {
+    for (dir, unwatch, watch) in subfolder_updates(root, &mut w.subfolders) {
+        if unwatch {
+            let _ = w.debouncer.watcher().unwatch(&dir);
+        }
+        if watch && w.debouncer.watcher().watch(&dir, RecursiveMode::NonRecursive).is_err() {
+            w.subfolders.insert(dir, None); // try again on the next event for it
+        }
+    }
+}
 
 /// Watches the folder itself (for stepwise.json, and cases/ or blocks/ being replaced) and cases/
 /// and blocks/, not everything under it: a big folder could use up Linux's limit on watches.
@@ -251,6 +302,7 @@ fn watch(app: AppHandle, root: PathBuf, known: Known) -> Result<Watcher, String>
     let shared: Watcher = Arc::new(Mutex::new(None));
     let weak = Arc::downgrade(&shared);
     let r = root.clone();
+    let (cases_dir, blocks_dir) = (root.join("cases"), root.join("blocks"));
     let debouncer = new_debouncer(Duration::from_millis(300), move |res: DebounceEventResult| {
         let events = match res {
             Ok(events) => events,
@@ -269,11 +321,13 @@ fn watch(app: AppHandle, root: PathBuf, known: Known) -> Result<Watcher, String>
         if !relevant {
             return;
         }
-        // cases/ or blocks/ may have been created or replaced (a git checkout): watch them again.
-        if let Some(shared) = weak.upgrade() {
-            if let Ok(mut guard) = shared.try_lock() {
-                if let Some(d) = guard.as_mut() {
-                    watch_subfolders(d, &r);
+        // cases/ or blocks/ itself was created, removed or replaced: update those watches.
+        if events.iter().any(|e| e.path == cases_dir || e.path == blocks_dir) {
+            if let Some(shared) = weak.upgrade() {
+                if let Ok(mut guard) = shared.try_lock() {
+                    if let Some(w) = guard.as_mut() {
+                        update_subfolders(w, &r);
+                    }
                 }
             }
         }
@@ -305,20 +359,11 @@ fn watch(app: AppHandle, root: PathBuf, known: Known) -> Result<Watcher, String>
     .map_err(err)?;
     {
         let mut guard = shared.lock().unwrap();
-        let d = guard.insert(debouncer);
-        d.watcher().watch(&root, RecursiveMode::NonRecursive).map_err(err)?;
-        watch_subfolders(d, &root);
+        let w = guard.insert(Watches { debouncer, subfolders: HashMap::new() });
+        w.debouncer.watcher().watch(&root, RecursiveMode::NonRecursive).map_err(err)?;
+        update_subfolders(w, &root);
     }
     Ok(shared)
-}
-
-fn watch_subfolders(d: &mut Debouncer<RecommendedWatcher>, root: &Path) {
-    for sub in ["cases", "blocks"] {
-        let dir = root.join(sub);
-        if dir.is_dir() {
-            let _ = d.watcher().watch(&dir, RecursiveMode::NonRecursive);
-        }
-    }
 }
 
 #[tauri::command]
@@ -523,6 +568,27 @@ mod tests {
         assert!(!is_transcript_name("a.md"));
         assert!(!is_transcript_name("-a"));
         assert!(!is_transcript_name(&"a".repeat(101)));
+    }
+
+    #[test]
+    fn subfolders_rewatched_only_when_replaced() {
+        let root = std::env::temp_dir().join(format!("stepwise-watch-{}", std::process::id()));
+        fs::create_dir_all(root.join("cases")).unwrap();
+        let mut watched = Subfolders::new();
+        let first = subfolder_updates(&root, &mut watched);
+        assert_eq!(first, vec![(root.join("cases"), false, true)]); // blocks/ doesn't exist yet
+        assert!(subfolder_updates(&root, &mut watched).is_empty()); // nothing changed: no re-watch
+        fs::write(root.join("cases/a.md"), "x").unwrap();
+        assert!(subfolder_updates(&root, &mut watched).is_empty()); // a file inside doesn't count
+        fs::create_dir(root.join("blocks")).unwrap();
+        assert_eq!(subfolder_updates(&root, &mut watched), vec![(root.join("blocks"), false, true)]);
+        // Replaced, as by a git checkout: unwatch the old folder and watch the new one.
+        fs::rename(root.join("cases"), root.join("old-cases")).unwrap();
+        fs::create_dir(root.join("cases")).unwrap();
+        assert_eq!(subfolder_updates(&root, &mut watched), vec![(root.join("cases"), true, true)]);
+        fs::remove_dir_all(root.join("blocks")).unwrap();
+        assert_eq!(subfolder_updates(&root, &mut watched), vec![(root.join("blocks"), true, false)]);
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
