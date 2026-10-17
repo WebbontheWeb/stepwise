@@ -280,6 +280,7 @@
     state.sel = last;
     if (!last || (last.kind !== 'coverage' && !currentItem())) selectFirst();
     renderAll();
+    syncTerm();
     $('#main').scrollTop = 0;
     setSave('saved');
     if (!opts.quiet) toast(`Opened ${folderLabel(state.current)}`);
@@ -357,6 +358,7 @@
     LS.set('sw.mode', 'demo');
     selectFirst();
     renderAll();
+    syncTerm();
     setSave('saved');
   }
 
@@ -459,6 +461,7 @@
     renderSide();
     renderMain();
     renderPanel();
+    renderTermHead();
     $('#main').scrollTop = 0;
   }
   // In narrow windows the sidebar and the details panel become slide-out drawers.
@@ -483,6 +486,7 @@
     renderSide();
     renderMain();
     renderPanel();
+    renderTermHead();
   }
 
   function renderTop() {
@@ -498,7 +502,10 @@
       h('span', { class: 'save', id: 'save' }),
       h('div', { class: 'spacer' }),
       h('button', { class: 'btn ghost', type: 'button', title: 'Export CSV', onclick: exportDialog }, icon('download'), h('span', { class: 't-label' }, 'Export CSV')),
-      h('button', { class: 'btn ghost', type: 'button', title: 'Work with Claude', onclick: claudeDialog }, icon('sparkle'), h('span', { class: 't-label' }, 'Work with Claude')),
+      h('button', {
+        class: 'btn ghost claude-btn', type: 'button', title: `Work with Claude (${isMac ? '⌘' : 'Ctrl+'}J)`,
+        'aria-pressed': term.open && state.mode === 'folder' ? 'true' : 'false', onclick: () => toggleTerm(),
+      }, icon('sparkle'), h('span', { class: 't-label' }, 'Work with Claude')),
       h('button', { class: 'btn ghost only-tiny', type: 'button', title: 'Links, checks and export', onclick: () => toggleDrawer('panel') }, icon('panel'), h('span', { class: 't-label' }, 'Details')),
       iconBtn('gear', 'Settings', settingsDialog),
       state.mode === 'demo' ? h('button', { class: 'btn primary', type: 'button', title: 'Choose a folder to keep test cases in', onclick: () => openFolder() },
@@ -639,7 +646,7 @@
       return main.replaceChildren(h('div', { class: 'empty' },
         h('h1', {}, none ? 'No test cases yet' : 'No test case selected'),
         h('p', {}, none
-          ? ['Write your first one, or open this folder in Claude Code and run ', h('code', {}, '/draft-case'), ' with a user story.']
+          ? ['Write your first one, or ', h('button', { class: 'link', type: 'button', onclick: () => sendToClaude('/draft-case ', false) }, 'ask Claude'), ' to draft some from a user story.']
           : 'Pick one from the list, or start a new one.'),
         h('button', { class: 'btn primary', type: 'button', onclick: newCaseDialog }, icon('plus'), 'New test case')));
     }
@@ -1551,32 +1558,235 @@
     saveExport(`${name}-${new Date().toISOString().slice(0, 10)}.csv`, S.toCSV(P(), cases, o), plural(cases.length, 'test case'));
   }
 
-  // ---------- Claude Code ----------
+  // ---------- Claude Code panel ----------
+  // A terminal docked under the editor, one per folder, kept running while you switch folders. Its
+  // shell runs in the folder and starts Claude Code, which uses your own Claude Code login. The
+  // buttons type commands into it.
 
-  function openClaude() {
-    claudeDialog();
+  const INSTALL_URL = 'https://code.claude.com/docs/en/setup';
+  const isMac = /Mac/i.test(navigator.platform);
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const term = { open: LS.get('sw.termOpen', false), height: LS.get('sw.termH', 320), sessions: new Map() };
+
+  const ANSI = {
+    light: ['#1c1e21', '#c2321c', '#2e7d32', '#a96f12', '#2f5fb3', '#6447cc', '#0d6e66', '#d2d2ca',
+      '#767b83', '#d9472f', '#3a9a3f', '#c4861d', '#3d73d1', '#7c5fe0', '#138a80', '#f6f6f3'],
+    dark: ['#24262a', '#ff8069', '#8bd17c', '#e9b354', '#7aa7ff', '#ab97ff', '#42b5a8', '#c4c6ca',
+      '#8e9299', '#ffa08f', '#a6e398', '#f2c879', '#9cbdff', '#c4b5ff', '#6fd0c4', '#ececea'],
+  };
+  const NAMES = ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white'];
+  const darkQuery = matchMedia('(prefers-color-scheme: dark)');
+
+  // Colors follow the app's own tokens, in light and dark.
+  function termTheme() {
+    const css = getComputedStyle(document.documentElement);
+    const v = name => css.getPropertyValue(name).trim();
+    const dark = darkQuery.matches;
+    const theme = {
+      background: v('--surface'), foreground: v('--ink'), cursor: v('--accent'), cursorAccent: v('--surface'),
+      selectionBackground: dark ? 'rgba(66, 181, 168, .32)' : 'rgba(13, 110, 102, .22)',
+      scrollbarSliderBackground: 'rgba(128, 128, 128, .25)',
+    };
+    ANSI[dark ? 'dark' : 'light'].forEach((c, i) => { theme[(i < 8 ? '' : 'bright') + (i < 8 ? NAMES[i] : NAMES[i - 8][0].toUpperCase() + NAMES[i - 8].slice(1))] = c; });
+    return theme;
   }
 
-  async function claudeDialog() {
-    if (state.mode !== 'folder') {
-      const r = await ask({
-        title: 'Work on test cases with Claude',
-        body: 'Claude works directly on your test case files, so open a folder first. Stepwise adds an AGENTS.md that explains the format, plus /audit, /draft-case and /find-blocks commands for Claude Code.',
-        buttons: [{ label: 'Close' }, { label: 'Open folder', value: 'open', primary: true }],
-      });
-      if (r === 'open') openFolder();
-      return;
-    }
-    // Single quotes so the shell treats the path literally (no $, ` or \ expansion).
-    const terminal = `cd '${state.root.replace(/'/g, `'\\''`)}' && claude`;
-    await ask({
+  function claudeNeedsFolder() {
+    ask({
       title: 'Work on test cases with Claude',
-      body: h('div', {},
-        h('p', {}, 'Run Claude Code in this folder, then use /audit, /draft-case or /find-blocks. Stepwise reloads whatever Claude changes and marks those cases as updated.'),
-        h('p', { class: 'help' }, h('button', { class: 'link', type: 'button', async onclick() { if (await copyText(terminal)) toast('Copied. Paste it into a terminal.'); } }, 'Copy terminal command'))),
-      buttons: [{ label: 'Close', value: 'ok', primary: true }],
+      body: 'Claude works directly on your test case files, so open a folder first. Stepwise adds an AGENTS.md that explains the format, plus /audit, /draft-case and /find-blocks commands for Claude Code.',
+      buttons: [{ label: 'Close' }, { label: 'Open folder', value: 'open', primary: true }],
+    }).then(r => { if (r === 'open') openFolder(); });
+  }
+
+  function toggleTerm(open = !term.open) {
+    if (open && state.mode !== 'folder') return claudeNeedsFolder();
+    term.open = open;
+    LS.set('sw.termOpen', open);
+    syncTerm(true);
+  }
+
+  // Shows the current folder's terminal (starting it if needed), or hides the panel.
+  function syncTerm(focus) {
+    const show = term.open && state.mode === 'folder';
+    $('#term').hidden = !show;
+    $('#top .claude-btn')?.setAttribute('aria-pressed', show ? 'true' : 'false');
+    if (!show) return;
+    $('.app').style.setProperty('--term-h', `${term.height}px`);
+    const s = term.sessions.get(state.root) || createSession(state.root);
+    for (const o of term.sessions.values()) o.el.hidden = o !== s;
+    renderTermHead();
+    requestAnimationFrame(() => {
+      fitTerm(s);
+      if (focus) s.xterm.focus();
+      startSession(s);
     });
   }
+
+  function renderTermHead() {
+    if ($('#term').hidden) return;
+    const s = term.sessions.get(state.root);
+    const missing = s && s.claude === false;
+    const cur = currentItem();
+    const cmd = (label, title, text, enter) => h('button', {
+      class: 'btn small', type: 'button', title: missing ? 'Install Claude Code first' : title, disabled: missing,
+      onclick: () => sendToClaude(text, enter),
+    }, label);
+    $('#term-head').replaceChildren(
+      h('span', { class: 'term-title' }, icon('sparkle'), 'Claude Code',
+        h('span', { class: 'term-folder', title: state.root }, folderLabel(state.current))),
+      h('div', { class: 'term-acts' },
+        cur && cur.kind === 'case' ? cmd('Review this case', `Runs /audit cases/${cur.id}.md`, `/audit cases/${cur.id}.md`, true) : null,
+        cmd('Review all cases', 'Runs /audit', '/audit', true),
+        cmd('Draft cases from a user story', 'Types /draft-case: paste or type the story, then press Return', '/draft-case ', false),
+        cmd('Find steps worth reusing', 'Runs /find-blocks', '/find-blocks', true),
+        h('span', { class: 'sep' }),
+        h('button', { class: 'btn small ghost', type: 'button', title: 'End this terminal and start a new one', onclick: restartTerm }, 'Restart'),
+        iconBtn('x', `Hide Claude Code (${isMac ? '⌘' : 'Ctrl+'}J)`, () => toggleTerm(false))));
+    const note = $('#term-note');
+    note.hidden = !missing;
+    if (missing) note.replaceChildren('Claude Code isn’t installed, or your shell can’t find the ', h('code', {}, 'claude'), ' command. ',
+      h('a', { href: INSTALL_URL }, 'Install Claude Code'), ', then choose Restart.');
+  }
+
+  function createSession(id) {
+    const el = h('div', { class: 'term-screen' });
+    $('#term-body').append(el);
+    const xterm = new window.Terminal({
+      fontFamily: '"SF Mono", ui-monospace, Menlo, Consolas, "Cascadia Mono", "DejaVu Sans Mono", monospace',
+      fontSize: 12.5, lineHeight: 1.15, cursorBlink: true, scrollback: 5000, theme: termTheme(),
+    });
+    const fit = new window.FitAddon.FitAddon();
+    xterm.loadAddon(fit);
+    xterm.open(el);
+    // generation: only output from the newest shell counts (an old one may still be saying goodbye).
+    const s = { id, el, xterm, fit, generation: 0, starting: null, running: false, claude: null, ended: false, startedAt: 0, lastOutput: 0 };
+    xterm.onData(data => {
+      if (s.ended) return restartTerm();
+      if (s.running) invoke('term_write', { id, data }).catch(() => {});
+    });
+    xterm.onResize(({ cols, rows }) => { if (s.running) invoke('term_resize', { id, cols, rows }).catch(() => {}); });
+    xterm.attachCustomKeyEventHandler(e => termKeys(e, s));
+    term.sessions.set(id, s);
+    return s;
+  }
+
+  function startSession(s) {
+    if (s.running || s.starting) return s.starting;
+    s.ended = false;
+    s.startedAt = Date.now();
+    fitTerm(s);
+    s.starting = termEvents.then(() => invoke('term_start', { id: s.id, cols: s.xterm.cols, rows: s.xterm.rows })).then(r => {
+      Object.assign(s, { generation: r.generation, claude: r.claude, running: true, starting: null });
+      if (s.id === state.root) renderTermHead();
+    }, err => {
+      s.starting = null;
+      s.xterm.write(`\r\nCouldn't start a terminal: ${err}\r\n`);
+    });
+    return s.starting;
+  }
+
+  async function restartTerm() {
+    const s = term.sessions.get(state.root);
+    if (!s) return;
+    if (s.starting) await s.starting;
+    await invoke('term_kill', { id: s.id });
+    // Any newer shell gets a higher generation, so this drops the old one's last output.
+    Object.assign(s, { generation: s.generation + 1, running: false, claude: null, ended: false });
+    s.xterm.reset();
+    renderTermHead();
+    await startSession(s);
+    s.xterm.focus();
+  }
+
+  // Types a command into Claude Code, opening the panel (and starting Claude) if needed.
+  async function sendToClaude(text, enter) {
+    if (state.mode !== 'folder') return claudeNeedsFolder();
+    if (!term.open) toggleTerm(true);
+    const s = term.sessions.get(state.root);
+    if (s.ended) await restartTerm();
+    await startSession(s);
+    if (!s.running) return;
+    if (s.claude === false) return toast('Install Claude Code first, then choose Restart.');
+    // A terminal that just started needs a moment for Claude Code to be ready for input.
+    while (Date.now() - s.startedAt < 20000 && (Date.now() - s.startedAt < 2500 || Date.now() - s.lastOutput < 800)) await sleep(150);
+    await invoke('term_write', { id: s.id, data: text });
+    // Return goes separately: arriving with the text, Claude Code would take it as part of a paste.
+    if (enter) {
+      await sleep(150);
+      await invoke('term_write', { id: s.id, data: '\r' });
+    }
+    s.xterm.focus();
+  }
+
+  function openClaude(command) {
+    sendToClaude(command, true);
+  }
+
+  function termKeys(e, s) {
+    if (e.type !== 'keydown') return true;
+    const mod = isMac ? e.metaKey : e.ctrlKey;
+    // Let these reach the app's own shortcuts.
+    if (mod && !e.altKey && (e.key === 'j' || (isMac && e.key === 'o'))) return false;
+    if (isMac) return true;
+    // Windows and Linux: Ctrl+C copies when text is selected (otherwise it interrupts), Ctrl+V pastes.
+    if (e.ctrlKey && e.code === 'KeyC' && (e.shiftKey || s.xterm.hasSelection())) {
+      copyText(s.xterm.getSelection());
+      s.xterm.clearSelection();
+      return false;
+    }
+    if (e.ctrlKey && e.code === 'KeyV') return false;
+    return true;
+  }
+
+  function fitTerm(s) {
+    if (!s || s.el.hidden || !s.el.clientWidth || !s.el.clientHeight) return;
+    try { s.fit.fit(); } catch (e) { /* not laid out yet */ }
+  }
+
+  function setTermHeight(px) {
+    term.height = Math.round(Math.max(140, Math.min(px, innerHeight - 52 - 140)));
+    $('.app').style.setProperty('--term-h', `${term.height}px`);
+  }
+
+  // Sessions start only once these listeners are in place, so no output is missed.
+  const termEvents = Promise.all([listen('term-output', ({ id, generation, data }) => {
+    const s = term.sessions.get(id);
+    if (!s || generation < s.generation) return;
+    s.lastOutput = Date.now();
+    s.xterm.write(Uint8Array.from(atob(data), c => c.charCodeAt(0)));
+  }), listen('term-exited', ({ id, generation }) => {
+    const s = term.sessions.get(id);
+    if (!s || generation < s.generation) return;
+    Object.assign(s, { running: false, ended: true });
+    invoke('term_ended', { id, generation });
+    s.xterm.write('\r\n\x1b[2m[The shell has ended. Press any key to start a new one.]\x1b[0m\r\n');
+  })]);
+
+  $('#term-resize').addEventListener('pointerdown', e => {
+    e.preventDefault();
+    const handle = e.currentTarget;
+    const startY = e.clientY, startH = $('#term').offsetHeight;
+    handle.setPointerCapture(e.pointerId);
+    handle.classList.add('dragging');
+    const move = ev => setTermHeight(startH + startY - ev.clientY);
+    const up = () => {
+      handle.classList.remove('dragging');
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', up);
+      LS.set('sw.termH', term.height);
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', up);
+  });
+  $('#term-resize').addEventListener('keydown', e => {
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    e.preventDefault();
+    setTermHeight(term.height + (e.key === 'ArrowUp' ? 24 : -24));
+    LS.set('sw.termH', term.height);
+  });
+  new ResizeObserver(() => requestAnimationFrame(() => fitTerm(term.sessions.get(state.root)))).observe($('#term-body'));
+  darkQuery.addEventListener('change', () => { for (const s of term.sessions.values()) s.xterm.options.theme = termTheme(); });
 
   async function settingsDialog() {
     const url = h('input', { class: 'field', value: P().settings.adoBaseUrl || '', placeholder: 'https://dev.azure.com/your-org/your-project' });
@@ -1683,6 +1893,7 @@
   document.addEventListener('keydown', e => {
     if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); flush(); }
     if ((e.metaKey || e.ctrlKey) && e.key === 'o' && !$('#dialog').open) { e.preventDefault(); $('#switcher').togglePopover(); }
+    if ((e.metaKey || e.ctrlKey) && e.key === 'j' && !$('#dialog').open) { e.preventDefault(); toggleTerm(); }
     if (e.key === 'Escape' && !$('#dialog').open) {
       if ($('.app').matches('.side-open, .panel-open')) { setDrawer('side', false); setDrawer('panel', false); }
       else if (state.picked.size) { state.picked.clear(); rerenderMain(); }

@@ -70,7 +70,7 @@ h1, h2, h3 { text-wrap: balance; }
 .app {
   display: grid;
   grid-template-columns: 268px minmax(0, 1fr) 380px;
-  grid-template-rows: 52px minmax(0, 1fr);
+  grid-template-rows: 52px minmax(0, 1fr) auto;
   height: 100vh;
 }
 .top {
@@ -81,10 +81,10 @@ h1, h2, h3 { text-wrap: balance; }
   border-bottom: 1px solid var(--line);
   min-width: 0;
 }
-.side { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); }
+.side { grid-column: 1; grid-row: 2 / 4; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); }
 .side-list { overflow: auto; padding: 2px 8px 32px; flex: 1; }
-.main { overflow: auto; min-width: 0; background: var(--surface); position: relative; }
-.panel { overflow: auto; border-left: 1px solid var(--line); }
+.main { grid-column: 2; grid-row: 2; overflow: auto; min-width: 0; background: var(--surface); position: relative; }
+.panel { grid-column: -2 / -1; grid-row: 2 / 4; overflow: auto; border-left: 1px solid var(--line); }
 .doc { max-width: 1120px; margin: 0 auto; padding: 22px 32px 140px; }
 .doc { container-type: inline-size; }
 @container (max-width: 640px) { .meta { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
@@ -99,6 +99,7 @@ h1, h2, h3 { text-wrap: balance; }
 
 @media (max-width: 1000px) {
   .app { grid-template-columns: minmax(0, 1fr) 320px; }
+  .main, .term { grid-column: 1; }
   .only-narrow { display: inline-grid !important; }
   .top .btn.ghost .t-label { display: none; }
   .top .btn.ghost { padding: 0 8px; }
@@ -127,6 +128,28 @@ h1, h2, h3 { text-wrap: balance; }
   :root { --cols: 44px minmax(0, 1fr) minmax(0, 1fr) 0; }
   .tools { display: none; }
 }
+
+/* ---------- Claude Code panel ---------- */
+
+.term { grid-column: 2; grid-row: 3; position: relative; display: flex; flex-direction: column; min-width: 0; height: var(--term-h, 320px); border-top: 1px solid var(--line-2); background: var(--surface); }
+.term[hidden] { display: none; }
+.term-resize { position: absolute; top: -4px; left: 0; right: 0; z-index: 3; height: 7px; cursor: row-resize; touch-action: none; }
+.term-resize:hover, .term-resize:focus-visible, .term-resize.dragging { outline: none; background: linear-gradient(transparent 2px, var(--accent) 2px, var(--accent) 4px, transparent 4px); }
+.term-head { display: flex; align-items: center; gap: 10px; flex: none; height: 40px; padding: 0 6px 0 12px; background: var(--bg); border-bottom: 1px solid var(--line); }
+.term-title { display: flex; align-items: center; gap: 7px; min-width: 0; font-weight: 650; white-space: nowrap; }
+.term-title .icon { color: var(--accent); }
+.term-folder { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-weight: 500; }
+.term-acts { display: flex; align-items: center; gap: 4px; min-width: 0; margin-left: auto; overflow-x: auto; scrollbar-width: none; }
+.term-acts::-webkit-scrollbar { display: none; }
+.term-acts .sep { flex: none; width: 1px; height: 18px; margin: 0 4px; background: var(--line-2); }
+.term-note { flex: none; padding: 8px 12px; background: var(--warn-soft); color: var(--ink); font-size: 13px; }
+.term-note[hidden] { display: none; }
+.term-note a { color: var(--accent); font-weight: 600; }
+.term-body { position: relative; flex: 1; min-height: 0; }
+.term-screen { position: absolute; inset: 8px 4px 4px 12px; }
+.term-screen[hidden] { display: none; }
+.term-screen .xterm-viewport { scrollbar-width: thin; scrollbar-color: var(--line-2) transparent; }
+.btn[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); }
 
 /* ---------- controls ---------- */
 
