@@ -1,0 +1,57 @@
+const S = require('./core.js');
+const files = require('./sample.js');
+const assert = require('assert');
+const p = S.createProject();
+for (const [path, text] of Object.entries(files)) {
+  const id = path.split('/').pop().replace(/\.md$/, '');
+  if (path.startsWith('cases/')) p.cases[id] = S.parseCase(id, text);
+  if (path.startsWith('blocks/')) p.blocks[id] = S.parseBlock(id, text);
+}
+S.resolveReferences(p);
+const bt = S.blockTitleFn(p);
+
+// round trip is byte-identical for every sample file
+for (const [path, text] of Object.entries(files)) {
+  const id = path.split('/').pop().replace(/\.md$/, '');
+  if (path.startsWith('cases/')) assert.strictEqual(S.writeCase(p.cases[id], bt), text, 'roundtrip ' + path);
+  if (path.startsWith('blocks/')) assert.strictEqual(S.writeBlock(p.blocks[id]), text, 'roundtrip ' + path);
+}
+console.log('round trip ok');
+
+const c = p.cases['expense-over-limit-approval'];
+const textRows = S.flatten(p, c, { blocks: 'inline', repeats: 'text' });
+console.log(textRows.map((r, i) => `${i + 1}. ${r.action}  =>  ${r.expected}`).join('\n'));
+assert.strictEqual(textRows.length, 9);
+assert.strictEqual(textRows[8].action, 'Repeat steps 3–6 as the manager');
+const inl = S.flatten(p, c, { blocks: 'inline', repeats: 'inline' });
+assert.strictEqual(inl.length, 12);
+const named = S.flatten(p, c, { blocks: 'name', repeats: 'text' });
+assert.strictEqual(named[5].action, 'Repeat steps 2–3 as the manager');
+
+// renumbering: insert a step at the top, repeat label follows
+c.steps.unshift(S.newStep('action', new Set(), { action: 'Clear browser cache', expected: 'Cache cleared' }));
+assert.match(S.writeCase(c, bt), /\[Repeat steps 3–4\] as the manager `#t7w2 repeat:p2x1\.\.m8q4`/);
+c.steps.shift();
+
+// hand-written steps (Claude style, no ids)
+const hand = S.parseCase('x', `---\ntitle: Hand\n---\n\n## Steps\n\n1. Open app\n   Expected: Loads\n2. Use block: Create a basic expense report\n3. Click save\n   and wait\n   Expected: Saved\n   with toast\n4. Repeat steps 2-3 as admin\n5. Step five \`#k3f9\`\n6. dup id \`#k3f9\`\n`);
+p.cases.x = hand; S.resolveReferences(p);
+assert.strictEqual(hand.steps[1].type, 'use'); assert.strictEqual(hand.steps[1].block, 'create-basic-expense-report');
+assert.strictEqual(hand.steps[2].action, 'Click save\nand wait'); assert.strictEqual(hand.steps[2].expected, 'Saved\nwith toast');
+assert.strictEqual(hand.steps[3].from, hand.steps[1].id); assert.strictEqual(hand.steps[3].to, hand.steps[2].id); assert.strictEqual(hand.steps[3].note, 'as admin');
+assert.notStrictEqual(hand.steps[4].id, hand.steps[5].id);
+const again = S.parseCase('x', S.writeCase(hand, bt));
+assert.deepStrictEqual(again.steps, hand.steps);
+console.log('hand-written ok');
+delete p.cases.x;
+
+// checks
+console.log(S.lintCase(p, p.cases['expense-pdf-export']));
+const broken = JSON.parse(JSON.stringify(c)); broken.steps.splice(1, 1);
+console.log(S.lintCase(p, broken).filter(i => i.level === 'error'));
+
+// exports
+console.log('--- TSV ---\n' + S.toGridTSV(c, textRows.slice(0, 3), {}));
+const csv = S.toCSV(p, [p.cases['expense-pdf-export']], {});
+console.log('--- CSV ---\n' + csv);
+console.log(S.relatedOf(p, c), Object.keys(S.coverage(p)));
