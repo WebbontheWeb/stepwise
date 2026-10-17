@@ -134,6 +134,17 @@ fn is_data(rel: &str) -> bool {
     )
 }
 
+/// Files the window may write or delete: the data files, and the AI instruction files Stepwise
+/// manages (AGENTS.md, CLAUDE.md and Claude Code commands). Nothing else in the folder, such as
+/// .git/. Transcripts and .gitignore have commands of their own.
+fn is_managed(rel: &str) -> bool {
+    is_data(rel)
+        || matches!(rel, "AGENTS.md" | "CLAUDE.md")
+        || rel.strip_prefix(".claude/commands/").is_some_and(|name| {
+            name.ends_with(".md") && !name.contains('/') && !name.starts_with('.') && !name.chars().any(char::is_control)
+        })
+}
+
 /// The data files in a folder (cases/*.md, blocks/*.md and stepwise.json), plus the paths of any
 /// that couldn't be read. One unreadable file doesn't stop the rest from loading.
 struct Scan {
@@ -417,6 +428,9 @@ pub fn read_text(ws: State<Workspace>, path: String) -> Result<Option<String>, S
 /// name matches an existing one on a case-insensitive disk.
 #[tauri::command]
 pub fn write_text(ws: State<Workspace>, path: String, text: String, base: Option<String>) -> Result<(), String> {
+    if !is_managed(&path) {
+        return Err(format!("Stepwise doesn't write {path}"));
+    }
     ws.with(|o| {
         let full = resolve(&o.root, &path)?;
         if !is_data(&path) {
@@ -441,6 +455,9 @@ fn check_base(full: &Path, base: Option<&str>, goal: Option<&str>) -> Result<(),
 /// Deletes a file in the open folder. For data files, `base` works as for write_text.
 #[tauri::command]
 pub fn remove_file(ws: State<Workspace>, path: String, base: Option<String>) -> Result<(), String> {
+    if !is_managed(&path) {
+        return Err(format!("Stepwise doesn't delete {path}"));
+    }
     ws.with(|o| {
         let full = resolve(&o.root, &path)?;
         let mut known = o.known.lock().unwrap();
@@ -589,6 +606,16 @@ mod tests {
         fs::remove_dir_all(root.join("blocks")).unwrap();
         assert_eq!(subfolder_updates(&root, &mut watched), vec![(root.join("blocks"), true, false)]);
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn managed_paths() {
+        for ok in ["cases/a.md", "stepwise.json", "AGENTS.md", "CLAUDE.md", ".claude/commands/audit.md"] {
+            assert!(is_managed(ok), "{ok}");
+        }
+        for bad in [".git/hooks/pre-commit", ".gitignore", "README.md", ".claude/settings.json", ".claude/commands/x/y.md", "transcripts/a.md", "cases/sub/a.md"] {
+            assert!(!is_managed(bad), "{bad}");
+        }
     }
 
     #[test]
