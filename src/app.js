@@ -1667,7 +1667,7 @@
         : h('p', { class: 'allgood' }, icon('check'), 'Nothing else to fix'),
       h('p', { class: 'help', style: 'margin-top:14px' }, 'These checks catch structural problems. For a review of the content itself, ask Claude.'),
       except && except.kind === 'case' ? h('button', {
-        class: 'btn small', type: 'button', onclick: () => openClaude(`/audit cases/${except.id}.md`),
+        class: 'btn small', type: 'button', onclick: () => reviewCase(except),
       }, icon('sparkle'), 'Review this case with Claude') : null);
   }
 
@@ -1909,6 +1909,11 @@
     startSession(s);
   }
 
+  // Commands only ever name a case whose file name is plain letters, digits, dots, dashes and
+  // underscores, so nothing typed into the terminal can mean something to a shell.
+  const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+  const auditCommand = c => (SAFE_ID.test(c.id) ? `/audit cases/${c.id}.md` : null);
+
   function renderTermHead() {
     if ($('#term').hidden) return;
     const s = term.sessions.get(state.root);
@@ -1922,7 +1927,7 @@
       h('span', { class: 'term-title' }, icon('sparkle'), 'Claude Code',
         h('span', { class: 'term-folder', title: state.root }, folderLabel(state.current))),
       h('div', { class: 'term-acts' },
-        cur && cur.kind === 'case' ? cmd('Review this case', `Runs /audit cases/${cur.id}.md`, `/audit cases/${cur.id}.md`, true) : null,
+        cur && cur.kind === 'case' && auditCommand(cur) ? cmd('Review this case', `Runs ${auditCommand(cur)}`, auditCommand(cur), true) : null,
         cmd('Review all cases', 'Runs /audit', '/audit', true),
         cmd('Draft cases from a user story', 'Types /draft-case: paste or type the story, then press Return', '/draft-case ', false),
         cmd('Find steps worth reusing', 'Runs /find-blocks', '/find-blocks', true),
@@ -1994,8 +1999,15 @@
     await startSession(s);
     if (!s.running) return;
     if (s.claude === false) return toast('Install Claude Code first, then choose Restart.');
-    // A terminal that just started needs a moment for Claude Code to be ready for input.
-    while (Date.now() - s.startedAt < 20000 && (Date.now() - s.startedAt < 2500 || Date.now() - s.lastOutput < 800)) await sleep(150);
+    await claudeReady(s);
+    // Commands are meant for Claude Code: if you've quit it, start it again rather than typing
+    // them into the shell.
+    if ((await invoke('term_at_prompt', { id: s.id })) === true) {
+      await invoke('term_write', { id: s.id, data: 'claude\r' });
+      s.startedAt = Date.now();
+      await claudeReady(s);
+      if ((await invoke('term_at_prompt', { id: s.id })) === true) return toast('Claude Code didn’t start. See the terminal for why.');
+    }
     // Only printable text: a file name can't smuggle in a Return or other control keys.
     await invoke('term_write', { id: s.id, data: text.replace(/[\u0000-\u001f\u007f-\u009f]/g, '') });
     // Return goes separately: arriving with the text, Claude Code would take it as part of a paste.
@@ -2006,7 +2018,14 @@
     s.xterm.focus();
   }
 
-  function openClaude(command) {
+  // A terminal that just started needs a moment for Claude Code to be ready for input.
+  async function claudeReady(s) {
+    while (Date.now() - s.startedAt < 20000 && (Date.now() - s.startedAt < 2500 || Date.now() - s.lastOutput < 800)) await sleep(150);
+  }
+
+  function reviewCase(c) {
+    const command = auditCommand(c);
+    if (!command) return toast('To review this case from here, rename its file to use only letters, digits and dashes.');
     sendToClaude(command, true);
   }
 

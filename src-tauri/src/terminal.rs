@@ -208,6 +208,25 @@ pub fn term_resize(terms: State<Terminals>, id: String, cols: u16, rows: u16) ->
         .map_err(|e| e.to_string())
 }
 
+/// Whether the shell itself is in the foreground, waiting at its prompt, rather than Claude Code
+/// (or anything else) running in it. Unknown (None) on Windows.
+#[tauri::command]
+pub fn term_at_prompt(terms: State<Terminals>, id: String) -> Option<bool> {
+    let map = terms.0.lock().unwrap();
+    let s = map.get(&id)?;
+    #[cfg(unix)]
+    {
+        let foreground = s.master.process_group_leader()?;
+        let shell = s.child.process_id()?;
+        Some(foreground as i64 == shell as i64)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = s;
+        None
+    }
+}
+
 /// Ends the folder's shell (and Claude Code with it). Starting again gives a fresh one.
 #[tauri::command]
 pub fn term_kill(terms: State<Terminals>, id: String) {
