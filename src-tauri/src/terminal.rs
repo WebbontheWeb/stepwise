@@ -10,8 +10,9 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
     thread,
-    time::{Duration, Instant},
 };
+#[cfg(not(windows))]
+use std::time::{Duration, Instant};
 
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
@@ -74,7 +75,13 @@ use std::process::{Command, Stdio};
 
 #[cfg(windows)]
 fn shell() -> (String, Vec<&'static str>) {
-    let pwsh = Command::new("where.exe").arg("pwsh.exe").stdout(Stdio::null()).stderr(Stdio::null()).status();
+    use std::os::windows::process::CommandExt;
+    let pwsh = Command::new("where.exe")
+        .arg("pwsh.exe")
+        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
     let exe = if pwsh.map(|s| s.success()).unwrap_or(false) { "pwsh.exe" } else { "powershell.exe" };
     (exe.into(), vec!["-NoLogo"])
 }

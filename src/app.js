@@ -69,6 +69,9 @@
   const clip = (t, n = 48) => (t.length > n ? t.slice(0, n - 1) + '…' : t);
   const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
   const baseName = p => String(p || '').split(/[\\/]/).filter(Boolean).pop() || String(p || '');
+  const isMac = /Mac/i.test(navigator.platform);
+  const MOD = isMac ? '⌘' : 'Ctrl+';
+  const ALT = isMac ? '⌥' : 'Alt+';
 
   // ---------- state ----------
 
@@ -323,11 +326,11 @@
     if (state.current === f) state.current = null;
     saveFolders();
     renderTop();
-    if ($('#switcher').matches(':popover-open')) renderSwitcher();
+    if (menuOpen()) renderSwitcher();
   }
 
   async function renameFolder(f) {
-    $('#switcher').hidePopover();
+    setMenu(false);
     const r = await ask({
       title: 'Rename in this list',
       body: 'Only changes the name Stepwise shows. The folder on disk keeps its name.',
@@ -342,13 +345,13 @@
   }
 
   function switchTo(f) {
-    if ($('#switcher').matches(':popover-open')) $('#switcher').hidePopover();
+    setMenu(false);
     if (state.mode === 'folder' && f === state.current) return;
     openFolder(f.path, { entry: f });
   }
 
   async function switchToDemo() {
-    $('#switcher').hidePopover();
+    setMenu(false);
     if (state.mode === 'demo') return;
     await flush();
     await invoke('close_workspace');
@@ -379,12 +382,28 @@
       h('div', { class: 'menu-head' }, 'Your folders'),
       ...(rows.length ? rows : [h('p', { class: 'menu-note' }, 'Folders you open show up here, so you can switch between them.')]),
       h('div', { class: 'menu-sep' }),
-      h('button', { class: 'menu-item', type: 'button', onclick() { menu.hidePopover(); openFolder(); } },
+      h('button', { class: 'menu-item', type: 'button', onclick() { setMenu(false); openFolder(); } },
         h('span', { class: 'mi-check' }, icon('plus')), text('Open another folder…')),
       h('button', { class: 'menu-item', type: 'button', 'aria-current': state.mode === 'demo' ? 'true' : null, onclick: switchToDemo },
         check(state.mode === 'demo'), text('Sample project', 'Demo data, kept inside Stepwise')),
       h('p', { class: 'menu-note foot' }, 'Stepwise keeps this list in its own settings, never in a file in your folders.'),
     ]);
+  }
+
+  // The folder menu is a popover. Older WebKit (Safari 16 and earlier, so macOS before Sonoma
+  // without updates) has no popover API; there it's shown with a class instead.
+  const hasPopover = typeof HTMLElement.prototype.showPopover === 'function';
+  const menuOpen = () => (hasPopover ? $('#switcher').matches(':popover-open') : $('#switcher').classList.contains('open'));
+  function setMenu(open) {
+    const menu = $('#switcher');
+    if (open === menuOpen()) return;
+    if (hasPopover) return open ? menu.showPopover() : menu.hidePopover();
+    if (open) renderSwitcher();
+    menu.classList.toggle('open', open);
+    if (open) {
+      placeSwitcher();
+      $('#switcher .menu-item[aria-current="true"], #switcher .menu-item')?.focus();
+    }
   }
 
   function placeSwitcher() {
@@ -601,7 +620,10 @@
   }
 
   function renderTop() {
-    const proj = h('button', { class: 'proj', type: 'button', popovertarget: 'switcher', title: 'Switch folder (⌘O)' },
+    const proj = h('button', {
+      class: 'proj', type: 'button', popovertarget: 'switcher', title: `Switch folder (${MOD}O)`,
+      onclick: hasPopover ? null : () => setMenu(!menuOpen()),
+    },
       icon('folder'),
       h('span', { class: 'name' }, state.mode === 'folder' ? folderLabel(state.current) || baseName(state.root) : 'Sample project'),
       state.mode === 'demo' ? h('span', { class: 'pill demo', title: 'Changes are kept inside Stepwise only. Open a folder to save real files.' }, 'Demo') : null,
@@ -614,7 +636,7 @@
       h('div', { class: 'spacer' }),
       h('button', { class: 'btn ghost', type: 'button', title: 'Export CSV', onclick: exportDialog }, icon('download'), h('span', { class: 't-label' }, 'Export CSV')),
       h('button', {
-        class: 'btn ghost claude-btn', type: 'button', title: `Work with Claude (${isMac ? '⌘' : 'Ctrl+'}J)`,
+        class: 'btn ghost claude-btn', type: 'button', title: `Work with Claude (${MOD}J)`,
         'aria-pressed': term.open && state.mode === 'folder' ? 'true' : 'false', onclick: () => toggleTerm(),
       }, icon('sparkle'), h('span', { class: 't-label' }, 'Work with Claude')),
       h('button', { class: 'btn ghost only-tiny', type: 'button', title: 'Links, checks and export', onclick: () => toggleDrawer('panel') }, icon('panel'), h('span', { class: 't-label' }, 'Details')),
@@ -961,8 +983,8 @@
       rows.length ? rows : h('div', { class: 'empty-steps' }, 'No steps yet.'),
       addBtns,
       h('p', { class: 'shortcuts' },
-        h('span', {}, h('kbd', {}, '⌘↵'), ' new step'), h('span', {}, h('kbd', {}, '⌘B'), ' bold'), h('span', {}, h('kbd', {}, '⌘I'), ' italic'),
-        h('span', {}, h('kbd', {}, '⌥↑↓'), ' move'), h('span', {}, 'Click a step number to select steps')),
+        h('span', {}, h('kbd', {}, `${MOD}↵`), ' new step'), h('span', {}, h('kbd', {}, `${MOD}B`), ' bold'), h('span', {}, h('kbd', {}, `${MOD}I`), ' italic'),
+        h('span', {}, h('kbd', {}, `${ALT}↑↓`), ' move'), h('span', {}, 'Click a step number to select steps')),
       state.picked.size ? renderSelBar(item) : null);
   }
 
@@ -1521,7 +1543,7 @@
     row.classList.remove('flash');
     void row.offsetWidth;
     row.classList.add('flash');
-    row.querySelector('textarea, select')?.focus({ preventScroll: true });
+    row.querySelector('.rich, select')?.focus({ preventScroll: true });
   }
 
   function seg(key, options, onchange, vertical) {
@@ -1566,7 +1588,7 @@
 
     const copyNext = h('div', { class: 'copynext' },
       h('div', { class: 'cn-head' }, h('h3', {}, 'Copy one cell at a time'), h('span', { class: 'count' }, `${pos} of ${seq.length}`)),
-      h('p', { class: 'help' }, 'For filling in a Test Case work item. Each click copies the next cell. Tip: after pasting, ⌘Tab back here and press Space.'),
+      h('p', { class: 'help' }, `For filling in a Test Case work item. Each click copies the next cell. Tip: after pasting, ${isMac ? '⌘Tab' : 'Alt+Tab'} back here and press Space.`),
       next
         ? h('button', {
             class: 'btn primary cn-btn', type: 'button', 'data-key': 'copy-next',
@@ -1695,7 +1717,6 @@
   // buttons type commands into it.
 
   const INSTALL_URL = 'https://code.claude.com/docs/en/setup';
-  const isMac = /Mac/i.test(navigator.platform);
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const term = { open: LS.get('sw.termOpen', false), height: LS.get('sw.termH', 320), sessions: new Map() };
 
@@ -1773,7 +1794,7 @@
         cmd('Find steps worth reusing', 'Runs /find-blocks', '/find-blocks', true),
         h('span', { class: 'sep' }),
         h('button', { class: 'btn small ghost', type: 'button', title: 'End this terminal and start a new one', onclick: restartTerm }, 'Restart'),
-        iconBtn('x', `Hide Claude Code (${isMac ? '⌘' : 'Ctrl+'}J)`, () => toggleTerm(false))));
+        iconBtn('x', `Hide Claude Code (${MOD}J)`, () => toggleTerm(false))));
     const note = $('#term-note');
     note.hidden = !missing;
     if (missing) note.replaceChildren('Claude Code isn’t installed, or your shell can’t find the ', h('code', {}, 'claude'), ' command. ',
@@ -1951,32 +1972,19 @@
   // ---------- output ----------
 
   // Puts both formatted (HTML) and plain text on the clipboard, so bold survives a paste into ADO.
-  async function copyRich(md) {
-    const plain = S.inlineToPlain(md);
-    try {
-      await navigator.clipboard.write([new ClipboardItem({
-        'text/plain': new Blob([plain], { type: 'text/plain' }),
-        'text/html': new Blob([S.inlineToHtml(md)], { type: 'text/html' }),
-      })]);
-      return true;
-    } catch (e) {
-      return copyText(plain);
-    }
+  // The Rust side writes it, which works the same in every system webview.
+  function copyRich(md) {
+    return copyText(S.inlineToPlain(md), S.inlineToHtml(md));
   }
 
-  async function copyText(text) {
+  async function copyText(text, html) {
     try {
-      await navigator.clipboard.writeText(text);
+      await invoke('copy_text', { text, html: html ?? null });
       return true;
     } catch (e) {
-      const ta = h('textarea', { style: 'position:fixed;opacity:0' });
-      ta.value = text;
-      document.body.append(ta);
-      ta.select();
-      const ok = document.execCommand('copy');
-      ta.remove();
-      if (!ok) toast("Couldn't copy to the clipboard");
-      return ok;
+      console.error(e);
+      toast("Couldn't copy to the clipboard");
+      return false;
     }
   }
 
@@ -2008,7 +2016,14 @@
     placeSwitcher();
     $('#switcher .menu-item[aria-current="true"], #switcher .menu-item')?.focus();
   });
-  window.addEventListener('resize', () => { if ($('#switcher').matches(':popover-open')) placeSwitcher(); });
+  window.addEventListener('resize', () => { if (menuOpen()) placeSwitcher(); });
+  // Without the popover API, close the folder menu on a click elsewhere or Escape.
+  if (!hasPopover) {
+    document.addEventListener('pointerdown', e => {
+      if (menuOpen() && !e.target.closest('#switcher, #top .proj')) setMenu(false);
+    });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape' && menuOpen()) setMenu(false); });
+  }
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
   // Web links (ADO work items, docs) open in the default browser rather than inside the app.
   document.addEventListener('click', e => {
@@ -2024,7 +2039,7 @@
   });
   document.addEventListener('keydown', e => {
     if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); flush(); }
-    if ((e.metaKey || e.ctrlKey) && e.key === 'o' && !$('#dialog').open) { e.preventDefault(); $('#switcher').togglePopover(); }
+    if ((e.metaKey || e.ctrlKey) && e.key === 'o' && !$('#dialog').open) { e.preventDefault(); setMenu(!menuOpen()); }
     if ((e.metaKey || e.ctrlKey) && e.key === 'j' && !$('#dialog').open) { e.preventDefault(); toggleTerm(); }
     if (e.key === 'Escape' && !$('#dialog').open) {
       if ($('.app').matches('.side-open, .panel-open')) { setDrawer('side', false); setDrawer('panel', false); }

@@ -5,6 +5,7 @@ mod workspace;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WindowEvent};
+use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
@@ -29,6 +30,17 @@ async fn export_file(app: AppHandle, name: String, text: String) -> Result<Optio
     let path = picked.into_path().map_err(|e| e.to_string())?;
     std::fs::write(&path, text).map_err(|e| e.to_string())?;
     Ok(Some(workspace::display(&path)))
+}
+
+/// Copies text, plus a formatted (HTML) version when given, so bold and italic survive a paste
+/// into Azure DevOps.
+#[tauri::command]
+fn copy_text(app: AppHandle, text: String, html: Option<String>) -> Result<(), String> {
+    match html {
+        Some(html) => app.clipboard().write_html(html, Some(text)),
+        None => app.clipboard().write_text(text),
+    }
+    .map_err(|e| e.to_string())
 }
 
 /// Opens a web link (an ADO work item, the Claude Code docs) in the default browser.
@@ -61,6 +73,7 @@ fn request_close(app: &AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(workspace::Workspace::default())
@@ -76,6 +89,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             pick_folder,
             export_file,
+            copy_text,
             open_url,
             quit,
             folders::load_folders,
