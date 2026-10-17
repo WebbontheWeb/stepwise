@@ -41,6 +41,10 @@ The app ends up in `src-tauri/target/release/bundle/` (on macOS, `macos/Stepwise
    `cases/`, `blocks/`, `stepwise.json`, and files that let Claude work on the cases with you (see
    below). After that, every edit is saved to the files automatically.
 
+If a file changes on disk while you have unsaved edits to it (Claude, a teammate or a sync service
+got there first), Stepwise doesn't overwrite it: it asks whether to keep your version or the one on
+disk.
+
 ### Switching between folders
 
 Click the folder name in the top bar (or press **⌘O**, **Ctrl+O** on Windows and Linux) to switch
@@ -48,13 +52,14 @@ between the folders you've opened, for example one per client. Each folder remem
 had open, and Stepwise reopens the last folder when it starts. You can rename entries (handy when two
 folders share a name) or remove them from the list; removing never touches files.
 
-The list is saved in Stepwise's own settings folder, never in a repository or a test case folder:
+The list (and each folder's unreviewed changes, under `reviews/`) is saved in Stepwise's own
+settings folder, never in a repository or a test case folder:
 
-| System | Folder list |
+| System | Settings folder |
 | --- | --- |
-| macOS | `~/Library/Application Support/io.github.webbontheweb.stepwise/folders.json` |
-| Windows | `%APPDATA%\io.github.webbontheweb.stepwise\folders.json` |
-| Linux | `~/.config/io.github.webbontheweb.stepwise/folders.json` |
+| macOS | `~/Library/Application Support/io.github.webbontheweb.stepwise/` |
+| Windows | `%APPDATA%\io.github.webbontheweb.stepwise\` |
+| Linux | `~/.config/io.github.webbontheweb.stepwise/` |
 
 ## Your data stays separate from the app
 
@@ -143,7 +148,8 @@ a file, Stepwise reloads it straight away, marks it **updated** in the sidebar, 
 **Changes from Claude**. There you see each file's changes line by line and choose **Keep** or
 **Undo** (or **Keep all** / **Undo all**). Undo puts the file back as it was: it rewrites a changed
 file, deletes a new one, or restores a deleted one. Editing a changed file in Stepwise keeps its
-change.
+change. Changes waiting for review are kept per folder, so they're still there after you switch
+folders (including changes Claude makes in a folder you've switched away from) or restart Stepwise.
 
 ### What Stepwise adds to a folder
 
@@ -153,7 +159,9 @@ change.
 - `.claude/commands/`: `/audit` (review cases and suggest fixes), `/draft-case` (turn a user story
   into cases) and `/find-blocks` (spot repeated steps that should be blocks).
 
-Stepwise only adds these files if they're missing, so you can edit them to suit your team.
+Setting up a new folder adds them; for a folder that already has test cases, Stepwise asks once and
+remembers your answer. It only ever adds missing files and doesn't put back ones you delete, so you
+can edit or remove them to suit your team. Settings has a link to add them later.
 
 The **Checks** tab catches structural problems (missing expected results, broken references,
 duplicate titles) as you type.
