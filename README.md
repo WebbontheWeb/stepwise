@@ -9,7 +9,8 @@ share them.
 1. Open `index.html` in **Chrome or Edge** (double-click it). It opens with a sample project
    saved in the browser, so you can try things out.
 2. Click **Open folder** and pick (or create) a folder for your real test cases. Stepwise adds
-   `cases/`, `blocks/`, `stepwise.json` and a `CLAUDE.md` that explains the format. After that,
+   `cases/`, `blocks/`, `stepwise.json`, and files that let Claude work on the cases with you (see
+   below). After that,
    every edit is saved to the files automatically.
 
 ### Open it like an app (Mac)
@@ -74,13 +75,22 @@ Choose whether blocks are written out as steps or named in one step, and whether
 After the first import, put the ADO ID into the case so later CSVs update it instead of creating
 a duplicate.
 
-## Reviewing with Claude
+## Working with Claude
 
-- **Claude Code**: open your test case folder in it. `CLAUDE.md` describes the format, so you can
-  ask things like "audit the approval cases" or "which requirements have no negative tests?".
-  Stepwise reloads changed files when you switch back to it.
-- **Claude chat**: **Copy for Claude** copies the cases, the blocks they use and a review
-  checklist to paste into a chat.
+Claude works directly in your test case folder rather than through copy and paste. When Stepwise
+sets up a folder it adds:
+
+- `AGENTS.md`: the file format, rules for writing good test cases, and how to work in the folder.
+  Other AI coding tools read this file too.
+- `CLAUDE.md`: a one-line pointer so Claude Code loads `AGENTS.md`.
+- `.claude/commands/`: `/audit` (review cases and suggest fixes), `/draft-case` (turn a user story
+  into cases) and `/find-blocks` (spot repeated steps that should be blocks).
+
+Stepwise only adds these files if they're missing, so you can edit them to suit your team.
+
+Open the folder in Claude Code (the Claude desktop app's Code tab, or `claude` in a terminal), ask
+for what you need, then switch back: Stepwise reloads changed files and marks those cases as
+**updated** in the sidebar. **Work with Claude** in the top bar shows these steps.
 
 The **Checks** tab catches structural problems (missing expected results, broken references,
 duplicate titles) as you type.
@@ -100,6 +110,7 @@ duplicate titles) as you type.
 | `index.html`, `styles.css`, `app.js` | The app |
 | `core.js` | File format, export and checks (no UI) |
 | `sample.js` | Fictional demo data |
+| `workspace.js` | The AGENTS.md, CLAUDE.md and commands added to test case folders |
 | `test.js` | `node test.js` runs the format and export tests |
 | `scripts/install-mac-launcher.sh` | Makes a Spotlight-launchable Mac app |
 | `assets/icon.svg` | App icon |

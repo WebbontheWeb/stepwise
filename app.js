@@ -101,6 +101,7 @@
     scanning: false,
     drag: null,
     copyPos: {},
+    changed: new Set(),
     copyFlash: null,
   };
   const P = () => state.project;
@@ -295,21 +296,19 @@
       if (!hasContent) {
         const choice = await ask({
           title: `Set up “${handle.name}” for Stepwise?`,
-          body: 'This adds cases/ and blocks/ folders, a stepwise.json settings file, and a CLAUDE.md that explains the file format to Claude. Nothing already in the folder is changed.',
+          body: 'This adds cases/ and blocks/ folders, a stepwise.json settings file, and an AGENTS.md, CLAUDE.md and a few commands so Claude can work on the test cases with you. Nothing already in the folder is changed.',
           buttons: [{ label: 'Cancel' }, { label: 'Add sample cases too', value: 'sample' }, { label: 'Set up', value: 'empty', primary: true }],
         });
         if (!choice) { state.dir = prev.dir; return; }
         await handle.getDirectoryHandle('cases', { create: true });
         await handle.getDirectoryHandle('blocks', { create: true });
         if (!(await fileExists('stepwise.json'))) await writeFile('stepwise.json', JSON.stringify({ adoBaseUrl: '' }, null, 2) + '\n');
-        if (!(await fileExists('CLAUDE.md'))) await writeFile('CLAUDE.md', S.CLAUDE_MD);
         if (choice === 'sample') {
           for (const [path, text] of Object.entries(window.StepwiseSample)) if (path !== 'stepwise.json') await writeFile(path, text);
         }
         found = await readFolder();
-      } else if (!(await fileExists('CLAUDE.md'))) {
-        await writeFile('CLAUDE.md', S.CLAUDE_MD);
       }
+      await ensureWorkspace();
     } catch (e) {
       state.dir = prev.dir;
       toast(`Couldn't read that folder: ${e.message}`);
@@ -327,15 +326,39 @@
     toast(`Opened ${handle.name}`);
   }
 
+  const isDataPath = p => /^(cases|blocks)\//.test(p) || p === 'stepwise.json';
+
+  // Make the folder a workspace Claude (and other agents) can work in. Only writes missing files.
+  async function ensureWorkspace() {
+    const W = window.StepwiseWorkspace;
+    for (const [path, text] of Object.entries(W.files)) {
+      const existing = await readText(path);
+      if (existing == null || (path === 'CLAUDE.md' && W.isOldClaudeMd(existing))) await writeFile(path, text);
+    }
+  }
+  async function readText(path) {
+    try {
+      const [d, name] = await dirFor(path, false);
+      return await (await (await d.getFileHandle(name)).getFile()).text();
+    } catch (e) {
+      return null;
+    }
+  }
+
   // Pick up edits made outside the app (by Claude, a teammate, or git) when the window regains focus.
   async function rescan() {
     if (state.mode !== 'folder' || state.dirty.size || state.deleted.size || state.scanning) return;
     state.scanning = true;
     try {
       const found = await readFolder();
-      const changed = Object.entries(found).filter(([p, v]) => state.mtimes[p] !== v.mtime).length;
-      const removed = Object.keys(state.mtimes).filter(p => !(p in found)).length;
+      const changedPaths = Object.entries(found).filter(([p, v]) => state.mtimes[p] !== v.mtime).map(([p]) => p);
+      const changed = changedPaths.length;
+      const removed = Object.keys(state.mtimes).filter(p => isDataPath(p) && !(p in found)).length;
       if (!changed && !removed) return;
+      for (const p of changedPaths) {
+        const m = p.match(/^(cases|blocks)\/(.+)\.md$/);
+        if (m) state.changed.add(`${m[1] === 'cases' ? 'case' : 'block'}:${m[2]}`);
+      }
       state.project = loadFiles(Object.fromEntries(Object.entries(found).map(([p, v]) => [p, v.text])));
       state.mtimes = Object.fromEntries(Object.entries(found).map(([p, v]) => [p, v.mtime]));
       if (state.sel && (state.sel.kind === 'case' || state.sel.kind === 'block') && !currentItem()) selectFirst();
@@ -355,6 +378,7 @@
     state.picked.clear();
     state.anchor = null;
     state.copyFlash = null;
+    if (sel) state.changed.delete(`${sel.kind}:${sel.id}`);
     LS.set('sw.sel', sel);
     renderSide();
     renderMain();
@@ -389,7 +413,7 @@
       h('span', { class: 'save', id: 'save' }),
       h('div', { class: 'spacer' }),
       h('button', { class: 'btn ghost', type: 'button', onclick: exportDialog }, icon('download'), 'Export CSV'),
-      h('button', { class: 'btn ghost', type: 'button', onclick: claudeDialog }, icon('sparkle'), 'Copy for Claude'),
+      h('button', { class: 'btn ghost', type: 'button', onclick: claudeDialog }, icon('sparkle'), 'Work with Claude'),
       iconBtn('gear', 'Settings', settingsDialog),
       reopen,
       h('button', {
@@ -445,6 +469,7 @@
           onclick: () => select({ kind: 'case', id: c.id }),
         }, h('span', { class: `dot ${S.worstLevel(lintOf(c))}`, title: lintTitle(lintOf(c)) }),
           h('span', { class: 't' }, c.title || 'Untitled test case'),
+          state.changed.has(`case:${c.id}`) ? h('span', { class: 'pill new', title: 'Changed outside Stepwise' }, 'updated') : null,
           c.ado_id ? h('span', { class: 'm' }, `#${c.ado_id}`) : null));
       }
     }
@@ -457,7 +482,9 @@
       kids.push(h('button', {
         class: 'item flat', type: 'button', 'aria-current': cur.kind === 'block' && cur.id === b.id ? 'true' : null,
         onclick: () => select({ kind: 'block', id: b.id }),
-      }, icon('block'), h('span', { class: 't' }, b.title || 'Untitled block'), h('span', { class: 'm', title: `Used by ${plural(uses, 'test case')}` }, `${uses}×`)));
+      }, icon('block'), h('span', { class: 't' }, b.title || 'Untitled block'),
+        state.changed.has(`block:${b.id}`) ? h('span', { class: 'pill new', title: 'Changed outside Stepwise' }, 'updated') : null,
+        h('span', { class: 'm', title: `Used by ${plural(uses, 'test case')}` }, `${uses}×`)));
     }
     if (!blocks.length) kids.push(h('div', { class: 'empty-side' }, q ? 'No matching blocks.' : 'Select steps in a test case and choose “Make reusable block”.'));
 
@@ -1258,8 +1285,8 @@
         h('button', { class: 'link t', type: 'button', onclick: () => select({ kind: item.kind, id: item.id }) }, item.title || 'Untitled'),
         h('span', { class: 'count' }, issues.length)))
         : h('p', { class: 'allgood' }, icon('check'), 'Nothing else to fix'),
-      h('p', { class: 'help', style: 'margin-top:14px' }, 'These checks catch structural problems. For a review of the content itself, use ',
-        h('button', { class: 'link', type: 'button', onclick: claudeDialog }, 'Copy for Claude'), '.'));
+      h('p', { class: 'help', style: 'margin-top:14px' }, 'These checks catch structural problems. For a review of the content itself, ',
+        h('button', { class: 'link', type: 'button', onclick: claudeDialog }, 'run /audit in Claude Code'), '.'));
   }
 
   function jumpToStep(id) {
@@ -1436,21 +1463,27 @@
     toast(`Exported ${plural(cases.length, 'test case')}`);
   }
 
-  async function claudeDialog() {
-    const scope = scopeSelect();
-    const r = await ask({
-      title: 'Ask Claude to review',
-      body: h('div', {},
-        h('p', {}, 'Copies the test cases, the blocks they use, and a review checklist. Paste it into a chat with Claude.'),
-        state.mode === 'folder'
-          ? h('p', {}, h('b', {}, 'Using Claude Code? '), `Open the “${state.dir.name}” folder in it instead. Its CLAUDE.md explains the format, so Claude can read the cases and propose edits right in the files. Stepwise reloads them when you come back.`)
-          : h('p', {}, h('b', {}, 'Using Claude Code? '), 'Open a folder here first. Claude Code can then work on the files directly.')),
-      extra: [h('span', { class: 'lbl' }, 'Which test cases'), scope],
-      buttons: [{ label: 'Cancel' }, { label: 'Copy', value: 'ok', primary: true }],
-    });
-    if (!r) return;
-    const cases = scope.pick();
-    if (await copyText(S.auditBundle(P(), cases))) toast(`Copied ${plural(cases.length, 'test case')} for Claude`);
+  function claudeDialog() {
+    const cmd = (name, what) => h('li', {}, h('code', {}, name), ` ${what}`);
+    const body = state.mode === 'folder'
+      ? h('div', {},
+          h('p', {}, `“${state.dir.name}” is set up for Claude: its AGENTS.md explains the file format and how to write good test cases, and it has a few commands ready to use.`),
+          h('ol', { class: 'steps-how' },
+            h('li', {}, 'Open the folder in Claude Code: in the Claude desktop app, choose ', h('b', {}, 'Code'), ' and pick this folder, or run ', h('code', {}, 'claude'), ' in a terminal from inside it.'),
+            h('li', {}, 'Ask for what you need, or use a command:',
+              h('ul', {},
+                cmd('/audit', 'reviews cases and suggests fixes'),
+                cmd('/draft-case', 'turns a user story into new cases'),
+                cmd('/find-blocks', 'spots repeated steps that should be blocks'))),
+            h('li', {}, 'Come back here. Stepwise reloads what Claude changed and marks those cases as updated.')))
+      : h('div', {},
+          h('p', {}, 'Claude works directly on your test case files, so open a folder first. Stepwise adds an AGENTS.md that explains the format, plus /audit, /draft-case and /find-blocks commands for Claude Code.'));
+    return ask({
+      title: 'Work on test cases with Claude',
+      body,
+      buttons: state.mode === 'folder' ? [{ label: 'Done', value: 'ok', primary: true }]
+        : [{ label: 'Close' }, ...(canPickFolder ? [{ label: 'Open folder', value: 'open', primary: true }] : [])],
+    }).then(r => { if (r === 'open') openFolder(); });
   }
 
   async function settingsDialog() {
@@ -1524,7 +1557,7 @@
 
   function toast(msg, action) {
     const t = $('#toast');
-    t.replaceChildren(h('span', {}, msg), action ? h('button', { type: 'button', onclick() { action.run(); t.classList.remove('show'); } }, action.label) : null);
+    t.replaceChildren(...[h('span', {}, msg), action && h('button', { type: 'button', onclick() { action.run(); t.classList.remove('show'); } }, action.label)].filter(Boolean));
     t.classList.add('show');
     clearTimeout(t._timer);
     t._timer = setTimeout(() => t.classList.remove('show'), action ? 7000 : 2600);
