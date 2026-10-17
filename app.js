@@ -34,6 +34,8 @@
     x: '<path d="M7 7l10 10M17 7 7 17"/>',
     check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
     target: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.5"/>',
+    menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+    panel: '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M14.5 4.5v15"/>',
     grip: '<circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/>',
   };
   function icon(name) {
@@ -379,12 +381,23 @@
     state.anchor = null;
     state.copyFlash = null;
     if (sel) state.changed.delete(`${sel.kind}:${sel.id}`);
+    setDrawer('side', false);
     LS.set('sw.sel', sel);
     renderSide();
     renderMain();
     renderPanel();
     $('#main').scrollTop = 0;
   }
+  // In narrow windows the sidebar and the details panel become slide-out drawers.
+  function setDrawer(which, open) {
+    const app = $('.app');
+    if (open) app.classList.remove(which === 'side' ? 'panel-open' : 'side-open');
+    app.classList.toggle(`${which}-open`, open);
+  }
+  function toggleDrawer(which) {
+    setDrawer(which, !$('.app').classList.contains(`${which}-open`));
+  }
+
   function selectFirst() {
     const c = sortedCases()[0];
     state.sel = c ? { kind: 'case', id: c.id } : null;
@@ -408,19 +421,21 @@
       ? h('button', { class: 'btn', type: 'button', onclick: () => openFolder(state.lastHandle) }, icon('folder'), `Reopen ${clip(state.lastHandle.name, 24)}`)
       : null;
     $('#top').replaceChildren(...[
+      h('button', { class: 'icon-btn only-narrow', type: 'button', title: 'Test cases', 'aria-label': 'Show test cases', onclick: () => toggleDrawer('side') }, icon('menu')),
       h('div', { class: 'brand' }, logo(), 'Stepwise'),
       proj,
       h('span', { class: 'save', id: 'save' }),
       h('div', { class: 'spacer' }),
-      h('button', { class: 'btn ghost', type: 'button', onclick: exportDialog }, icon('download'), 'Export CSV'),
-      h('button', { class: 'btn ghost', type: 'button', onclick: claudeDialog }, icon('sparkle'), 'Work with Claude'),
+      h('button', { class: 'btn ghost', type: 'button', title: 'Export CSV', onclick: exportDialog }, icon('download'), h('span', { class: 't-label' }, 'Export CSV')),
+      h('button', { class: 'btn ghost', type: 'button', title: 'Work with Claude', onclick: claudeDialog }, icon('sparkle'), h('span', { class: 't-label' }, 'Work with Claude')),
+      h('button', { class: 'btn ghost only-tiny', type: 'button', title: 'Links, checks and export', onclick: () => toggleDrawer('panel') }, icon('panel'), h('span', { class: 't-label' }, 'Details')),
       iconBtn('gear', 'Settings', settingsDialog),
       reopen,
       h('button', {
         class: state.mode === 'demo' ? 'btn primary' : 'btn', type: 'button',
         disabled: !canPickFolder, title: canPickFolder ? 'Choose a folder to keep test cases in' : 'Opening folders needs Chrome or Edge',
         onclick: () => openFolder(),
-      }, icon('folder'), state.mode === 'demo' ? 'Open folder' : 'Switch folder'),
+      }, icon('folder'), h('span', { class: 't-label' }, state.mode === 'demo' ? 'Open folder' : 'Switch folder')),
     ].filter(Boolean));
     setSave(state.saveState);
   }
@@ -513,10 +528,6 @@
     if (!item) return;
     const count = $('#export-count');
     if (count && item.kind === 'case') count.textContent = stepCountText(item);
-    document.querySelectorAll('#main option[data-step]').forEach(o => {
-      const i = item.steps.findIndex(s => s.id === o.dataset.step);
-      if (i >= 0) o.textContent = optionLabel(item, i);
-    });
     const issues = lintOf(item);
     document.querySelectorAll('#main .step').forEach(row => {
       const level = S.worstLevel(issues.filter(i => i.step === row.dataset.id));
@@ -670,9 +681,9 @@
           h('datalist', { id: 'suite-list' }, suites.map(s => h('option', { value: s })))), 'wide'),
         field('State', selectEl(c, 'state', S.STATES.map(s => [s, s]))),
         field('Priority', selectEl(c, 'priority', [['1', '1 · Highest'], ['2', '2'], ['3', '3'], ['4', '4 · Lowest']])),
-        field('Assigned to', input(c, 'assigned', { placeholder: 'Name or email' })),
         field('Area path', input(c, 'area', { placeholder: 'Project\\Area' }), 'wide'),
-        field('ADO ID', input(c, 'ado_id', { inputmode: 'numeric', placeholder: 'After first import' })),
+        field('Assigned to', input(c, 'assigned', { placeholder: 'Name or email' })),
+        field('ADO ID', input(c, 'ado_id', { inputmode: 'numeric', placeholder: 'Not in ADO yet' })),
         field('Tags', h('input', {
           class: 'field', value: c.tags.join(', '), placeholder: 'comma, separated', 'data-key': 'tags',
           oninput(e) { c.tags = e.target.value.split(/[,;]/).map(t => t.trim()).filter(Boolean); touch(c); },
@@ -737,11 +748,13 @@
     return h('section', { 'aria-label': 'Steps' },
       h('div', { class: 'steps-head' },
         h('h2', {}, 'Steps'),
-        isCase ? h('span', { class: 'count', id: 'export-count' }, stepCountText(item)) : h('span', { class: 'count' }, plural(item.steps.length, 'step')),
-        h('span', { class: 'hint-keys' }, h('kbd', {}, '⌘'), h('kbd', {}, '↵'), ' new step  ·  ', h('kbd', {}, '⌘'), h('kbd', {}, 'B'), ' bold  ·  ', h('kbd', {}, '⌥'), h('kbd', {}, '↑↓'), ' move  ·  click a number to select')),
+        isCase ? h('span', { class: 'count', id: 'export-count' }, stepCountText(item)) : h('span', { class: 'count' }, plural(item.steps.length, 'step'))),
       h('div', { class: 'colhead' }, h('span', {}, '#'), h('span', {}, 'Action'), h('span', {}, 'Expected result'), h('span', {})),
       rows.length ? rows : h('div', { class: 'empty-steps' }, 'No steps yet.'),
       addBtns,
+      h('p', { class: 'shortcuts' },
+        h('span', {}, h('kbd', {}, '⌘↵'), ' new step'), h('span', {}, h('kbd', {}, '⌘B'), ' bold'), h('span', {}, h('kbd', {}, '⌘I'), ' italic'),
+        h('span', {}, h('kbd', {}, '⌥↑↓'), ' move'), h('span', {}, 'Click a step number to select steps')),
       state.picked.size ? renderSelBar(item) : null);
   }
 
@@ -785,7 +798,8 @@
           onclick() { toggleExpand(s.id); },
         }, icon('chevron'), plural(b.steps.length, 'step')),
         b && h('button', { class: 'link', type: 'button', style: 'font-size:12.5px', onclick: () => select({ kind: 'block', id: b.id }) }, 'Edit block'));
-      right = h('div', { class: 'ref-note' }, b ? (firstLine(b.description) || '') : 'Choose which block’s steps go here.');
+      if (b) left.classList.add('span2');
+      right = b ? null : h('div', { class: 'ref-note' }, 'Choose which block’s steps go here.');
       if (b && open) sub = h('div', { class: 'sub' }, b.steps.length
         ? b.steps.map((bs, j) => subRow(`${i + 1}.${j + 1}`, bs.action, bs.expected))
         : h('div', { class: 'subrow' }, h('span', {}), h('span', { class: 'none' }, 'This block has no steps yet.')));
@@ -794,10 +808,11 @@
       const open = state.expanded.has(s.id);
       const opts = (val, placeholder) => [
         h('option', { value: '', selected: !val }, placeholder),
-        earlier.map((o, j) => h('option', { value: o.id, 'data-step': o.id, selected: o.id === val }, optionLabel(item, j))),
+        earlier.map((o, j) => h('option', { value: o.id, selected: o.id === val, title: optionLabel(item, j) }, String(j + 1))),
       ];
       left = h('div', { class: 'ref' },
         h('span', { class: 'badge repeat' }, icon('repeat'), 'Repeat'),
+        h('span', { class: 'word' }, 'steps'),
         h('select', {
           class: 'mini', 'data-key': `${s.id}:from`, 'aria-label': `Step ${i + 1} repeat from`,
           onchange(e) {
@@ -806,15 +821,15 @@
             if (!s.to || b < a) s.to = s.from;
             touch(item); rerenderMain();
           },
-        }, opts(s.from, 'From step…')),
-        h('span', { class: 'word' }, 'through'),
+        }, opts(s.from, '–')),
+        h('span', { class: 'word' }, 'to'),
         h('select', {
           class: 'mini', 'data-key': `${s.id}:to`, 'aria-label': `Step ${i + 1} repeat through`,
           onchange(e) { s.to = e.target.value; touch(item); rerenderMain(); },
-        }, opts(s.to, 'To step…')),
+        }, opts(s.to, '–')),
         s.from && s.to && h('button', {
           class: 'expand', type: 'button', 'aria-expanded': open ? 'true' : 'false', onclick() { toggleExpand(s.id); },
-        }, icon('chevron'), open ? 'Hide' : 'Show'),
+        }, icon('chevron'), open ? 'Hide steps' : 'Show steps'),
         h('input', {
           class: 'mini note', value: s.note, placeholder: 'Note, e.g. as a manager', 'data-key': `${s.id}:note`, 'aria-label': `Step ${i + 1} note`,
           oninput(e) { s.note = e.target.value; touch(item); },
@@ -829,7 +844,7 @@
       right = stepArea(item, s, i, 'expected', 'Expected result');
     }
 
-    row.append(gutter, left, right, tools);
+    row.append(...[gutter, left, right, tools].filter(Boolean));
     if (sub) row.append(sub);
 
     row.addEventListener('dragover', e => {
@@ -1299,8 +1314,8 @@
     row.querySelector('textarea, select')?.focus({ preventScroll: true });
   }
 
-  function seg(key, options, onchange) {
-    return h('div', { class: 'seg', role: 'radiogroup' }, options.map(([v, label]) => h('button', {
+  function seg(key, options, onchange, vertical) {
+    return h('div', { class: vertical ? 'seg vertical' : 'seg', role: 'radiogroup' }, options.map(([v, label]) => h('button', {
       type: 'button', role: 'radio', 'aria-checked': state.exportOpts[key] === v ? 'true' : 'false',
       onclick() { state.exportOpts[key] = v; LS.set('sw.export', state.exportOpts); onchange(); },
     }, label)));
@@ -1361,10 +1376,11 @@
       h('div', { class: 'psec' },
         h('h3', {}, 'Send this case to ADO'),
         h('p', { class: 'help' }, 'Steps are numbered the way ADO will number them, so “Repeat steps” stays correct.'),
-        hasBlocks ? h('div', { class: 'opt' }, h('span', { class: 'lbl' }, 'Blocks'), seg('blocks', [['inline', 'Write out every time'], ['once', 'Write out once, then “Repeat steps”'], ['name', 'One step naming the block']], refresh)) : null,
+        hasBlocks ? h('div', { class: 'opt' }, h('span', { class: 'lbl' }, 'Blocks'), seg('blocks', [['inline', 'Write the steps out every time'], ['once', 'Write them out once, then “Repeat steps”'], ['name', 'One step naming the block']], refresh, true)) : null,
         hasRepeats ? h('div', { class: 'opt' }, h('span', { class: 'lbl' }, 'Repeats'), seg('repeats', [['text', 'Say “Repeat steps 3–6”'], ['inline', 'Write the steps out again']], refresh)) : null,
         copyNext,
-        h('div', { class: 'opt' }, h('span', { class: 'lbl' }, 'Or send it all at once (needs Test Plans access)')),
+        h('details', { class: 'bulk' },
+        h('summary', {}, 'Send it all at once (needs Test Plans access)'),
         h('div', { class: 'opt' }, h('span', { class: 'lbl' }, 'Title when pasting'), seg('titleRow', [['own', 'On its own row'], ['first', 'On the step 1 row']], refresh)),
         h('div', { class: 'export-actions' },
           h('button', {
@@ -1375,12 +1391,11 @@
             class: 'btn', type: 'button',
             onclick() { download(`${c.id}.csv`, S.toCSV(P(), [c], state.exportOpts), 'text/csv'); },
           }, icon('download'), 'CSV')),
-        h('details', { class: 'how' }, h('summary', {}, 'How to bring this into ADO'),
-          h('ol', {},
-            h('li', {}, h('b', {}, 'One cell at a time: '), 'create a Test Case work item, then use Copy one cell at a time and paste each cell into the title, the Steps grid and the description.'),
-            h('li', {}, h('b', {}, 'Paste: '), 'in Test Plans, open the suite, switch to Grid view, click the first empty Title cell and paste. Save.'),
-            h('li', {}, h('b', {}, 'CSV: '), 'in Test Plans, open the suite, choose Import test cases from CSV, and pick the file. Rows with an ADO ID update that case.'),
-            h('li', {}, h('b', {}, 'Afterwards: '), 'put the new ADO ID into the case here so future CSVs update it instead of making a copy.'))),
+        h('ol', { class: 'how' },
+          h('li', {}, h('b', {}, 'Grid: '), 'in Test Plans, open the suite, switch to Grid view, click the first empty Title cell and paste. Save.'),
+          h('li', {}, h('b', {}, 'CSV: '), 'in Test Plans, open the suite, choose Import test cases from CSV, and pick the file. Rows with an ADO ID update that case.'),
+          h('li', {}, 'Afterwards, put the new ADO ID into the case here so later CSVs update it instead of making a copy.'))),
+        h('h3', { class: 'preview-head' }, 'Preview'),
         h('table', { class: 'preview' },
           h('thead', {}, h('tr', {}, h('th', {}, '#'), h('th', {}, 'Step action'), h('th', {}, 'Expected result'))),
           h('tbody', {},
@@ -1566,6 +1581,7 @@
   // ---------- boot ----------
 
   $('#search').addEventListener('input', e => { state.search = e.target.value; renderSide(); });
+  $('#scrim').addEventListener('click', () => { setDrawer('side', false); setDrawer('panel', false); });
   window.addEventListener('focus', rescan);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
   window.addEventListener('beforeunload', e => {
@@ -1573,7 +1589,10 @@
   });
   document.addEventListener('keydown', e => {
     if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); flush(); }
-    if (e.key === 'Escape' && state.picked.size && !$('#dialog').open) { state.picked.clear(); rerenderMain(); }
+    if (e.key === 'Escape' && !$('#dialog').open) {
+      if ($('.app').matches('.side-open, .panel-open')) { setDrawer('side', false); setDrawer('panel', false); }
+      else if (state.picked.size) { state.picked.clear(); rerenderMain(); }
+    }
   });
 
   async function boot() {
