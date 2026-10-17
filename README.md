@@ -67,9 +67,13 @@ folder:
 
 This repository contains only the app and fictional demo data. Your test cases never live here:
 
-- **Real test cases** are saved only in the folder you open. Keep that folder somewhere else (its
-  own private repo, a shared drive, or just your machine). `.gitignore` excludes `cases/`, `blocks/`,
-  `transcripts/`, `stepwise.json` and CSV exports just in case.
+- **Real test cases** are saved in the folder you open. Keep that folder somewhere else (its
+  own private repo, a shared drive, or just your machine). This repo's `.gitignore` excludes `cases/`,
+  `blocks/`, `transcripts/`, `stepwise.json` and CSV exports just in case.
+- **Changes waiting for review** are the one exception: until you keep or undo them, copies of
+  the changed files' text (before and after) are kept in Stepwise's settings folder (above). They're
+  deleted once reviewed, and when you remove the folder from the list. On Windows that settings
+  folder is in roaming AppData, which some organizations sync.
 - **Demo mode** edits are kept in the app's local storage, not in any file.
 - **Your list of folders** is kept in Stepwise's settings folder (above).
 - **Stepwise itself makes no network calls.** No analytics, no CDNs, no uploads. Links to ADO open

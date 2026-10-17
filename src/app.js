@@ -492,6 +492,9 @@
 
   function forgetFolder(f) {
     state.folders = state.folders.filter(x => x !== f);
+    // Its unreviewed changes (copies of case text) go too, and nothing more is remembered about it.
+    state.away.delete(f.path);
+    invoke('save_review', { folder: f.path, entries: {} }).catch(e => console.error(e));
     if (state.current === f) state.current = null;
     saveFolders();
     renderTop();
@@ -721,7 +724,7 @@
   // Unreviewed changes are kept per folder (in Stepwise's settings, not the folder), so they
   // survive switching folders and quitting.
   function saveReview() {
-    if (state.mode !== 'folder') return;
+    if (state.mode !== 'folder' || !state.current) return; // a folder removed from the list keeps nothing
     invoke('save_review', { folder: state.root, entries: Object.fromEntries(state.review) }).catch(e => console.error(e));
   }
 
