@@ -260,7 +260,7 @@
   }
 
   // ---------- conflicts ----------
-  // A file changed on disk (by Claude, a teammate or a sync service) while you had unsaved edits
+  // A file changed on disk (by an AI assistant, a teammate or a sync service) while you had unsaved edits
   // to it. Nothing is dropped: you choose which version to keep. state.conflicts maps the path to
   // your version (null if you deleted it).
 
@@ -307,10 +307,10 @@
     const choice = await ask({
       title: `“${name}” was changed outside Stepwise`,
       body: disk == null
-        ? `${path} was deleted on disk (by Claude, a teammate or a sync service) while you had unsaved edits to it.`
+        ? `${path} was deleted on disk (by an AI assistant, a teammate or a sync service) while you had unsaved edits to it.`
         : mine == null
-          ? `You deleted ${path} here, but it was changed on disk (by Claude, a teammate or a sync service) before that was saved.`
-          : `${path} changed on disk (by Claude, a teammate or a sync service) while you had unsaved edits to it. Which version do you want to keep?`,
+          ? `You deleted ${path} here, but it was changed on disk (by an AI assistant, a teammate or a sync service) before that was saved.`
+          : `${path} changed on disk (by an AI assistant, a teammate or a sync service) while you had unsaved edits to it. Which version do you want to keep?`,
       buttons: [
         { label: disk == null ? 'Leave it deleted' : mine == null ? 'Keep the file' : 'Use the version on disk', value: 'disk' },
         { label: mine == null ? 'Delete it' : 'Keep my version', value: 'mine', primary: true },
@@ -620,9 +620,9 @@
   }
 
   // ---------- changes made outside the app ----------
-  // The Rust side watches cases/, blocks/ and stepwise.json and reports edits made by Claude, a
+  // The Rust side watches cases/, blocks/ and stepwise.json and reports edits made by an AI assistant, a
   // teammate or git (never the app's own writes), with each file's text before and after. Each
-  // changed file waits in "Changes from Claude" until you keep or undo it.
+  // changed file waits in "Outside changes" until you keep or undo it.
 
   function applyChanges(changes) {
     for (const { path, after } of changes) {
@@ -697,7 +697,7 @@
     for (const [path, r] of Object.entries(saved)) {
       if (isDataPath(path) && r && typeof r === 'object') review.set(path, { before: r.before ?? null, after: r.after ?? null });
     }
-    // Changes made while you were in another folder (Claude keeps working in its terminal there).
+    // Changes made while you were in another folder (an assistant may still be working there).
     const away = state.away.get(root);
     if (away) {
       for (const path of new Set([...Object.keys(away), ...Object.keys(files)])) {
@@ -768,12 +768,12 @@
     if (!entries.length) {
       return h('div', { class: 'empty' },
         h('h1', {}, 'No changes to review'),
-        h('p', {}, 'When Claude (or anyone else) changes files in this folder, they show up here so you can keep or undo each change.'));
+        h('p', {}, 'When an AI assistant, a teammate or git changes files in this folder, they show up here so you can keep or undo each change.'));
     }
     return h('div', { class: 'doc review' },
       h('div', { class: 'rv-top' },
         h('div', {},
-          h('h1', {}, 'Changes from Claude'),
+          h('h1', {}, 'Outside changes'),
           h('p', { class: 'help' }, `${plural(entries.length, 'file')} changed outside Stepwise since you last looked. Keep each change, or undo it to put the file back. Editing a file in Stepwise keeps its change.`)),
         h('div', { class: 'acts' },
           h('button', { class: 'btn', type: 'button', onclick: undoAll }, 'Undo all'),
@@ -902,7 +902,7 @@
     if (state.review.size || cur.kind === 'review') kids.push(h('button', {
       class: 'item flat nav', type: 'button', 'aria-current': cur.kind === 'review' ? 'true' : null,
       onclick: () => select({ kind: 'review' }),
-    }, icon('sparkle'), h('span', { class: 't' }, 'Changes from Claude'), state.review.size ? h('span', { class: 'pill new' }, state.review.size) : null));
+    }, icon('sparkle'), h('span', { class: 't' }, 'Outside changes'), state.review.size ? h('span', { class: 'pill new' }, state.review.size) : null));
     kids.push(h('button', {
       class: 'item flat nav', type: 'button', 'aria-current': cur.kind === 'coverage' ? 'true' : null,
       onclick: () => select({ kind: 'coverage' }),

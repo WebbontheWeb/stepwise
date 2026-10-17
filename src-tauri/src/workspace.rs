@@ -1,5 +1,5 @@
 //! The open test case folder: reading and writing files inside it, and watching it for changes
-//! made outside the app (by Claude Code, a teammate, or git).
+//! made outside the app (by an AI assistant, a teammate, or git).
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},

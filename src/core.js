@@ -53,7 +53,7 @@
   }
 
   /**
-   * Splits off the frontmatter. Keys not in `known` (added by a teammate, another tool or Claude)
+   * Splits off the frontmatter. Keys not in `known` (added by a teammate, another tool or an AI assistant)
    * come back in `extra` as their original lines, with any indented or list lines under them, so
    * they can be written back unchanged.
    */
@@ -142,7 +142,7 @@
       const [from, to] = attrs.repeat.split('..');
       return { id, type: 'repeat', from, to: to || from, note: text.replace(/^\[[^\]]*\]\s*/, ''), expected: '' };
     }
-    // Hand-written forms without metadata (e.g. written by Claude or a teammate).
+    // Hand-written forms without metadata (e.g. written by an AI assistant or a teammate).
     const use = text.match(/^\[?\s*use (?:block|shared steps)\s*:\s*([^\]]+?)\s*\]?$/i);
     if (use) return { id, type: 'use', block: use[1] };
     const rep = text.match(/^\[?\s*repeat steps?\s+(\d+)(?:\s*(?:–|-|to|through)\s*(\d+))?\s*\]?\s*(.*)$/i);
