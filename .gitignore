@@ -2,6 +2,7 @@
 /cases/
 /blocks/
 /stepwise.json
+/transcripts/
 *.csv
 
 # OS and editor files

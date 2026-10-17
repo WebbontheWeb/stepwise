@@ -101,6 +101,7 @@
     away: new Map(), // folder -> its disk texts when you switched away from it
     conflicts: new Map(), // path -> your unsaved version, when the file changed on disk meanwhile
     copyFlash: null,
+    assistant: null, // 'claude' | 'claude-code' | 'codex', from Stepwise's settings
   };
   const P = () => state.project;
 
@@ -874,6 +875,7 @@
       h('span', { class: 'save', id: 'save' }),
       h('div', { class: 'spacer' }),
       h('button', { class: 'btn ghost', type: 'button', title: 'Export CSV', onclick: exportDialog }, icon('download'), h('span', { class: 't-label' }, 'Export CSV')),
+      h('button', { class: 'btn ghost', type: 'button', title: 'Open this folder in your AI assistant', onclick: aiDialog }, icon('sparkle'), h('span', { class: 't-label' }, 'Work with AI')),
       h('button', { class: 'btn ghost only-tiny', type: 'button', title: 'Links, checks and export', onclick: () => toggleDrawer('panel') }, icon('panel'), h('span', { class: 't-label' }, 'Details')),
       iconBtn('gear', 'Settings', settingsDialog),
       state.mode === 'demo' ? h('button', { class: 'btn primary', type: 'button', title: 'Choose a folder to keep test cases in', onclick: () => openFolder() },
@@ -1034,7 +1036,7 @@
       return main.replaceChildren(h('div', { class: 'empty' },
         h('h1', {}, none ? 'No test cases yet' : 'No test case selected'),
         h('p', {}, none
-          ? 'Write your first one.'
+          ? ['Write your first one, or ', h('button', { class: 'link', type: 'button', onclick: aiDialog }, 'work with AI'), ' to draft some from a user story or a recorded test session.']
           : 'Pick one from the list, or start a new one.'),
         h('button', { class: 'btn primary', type: 'button', onclick: newCaseDialog }, icon('plus'), 'New test case')));
     }
@@ -1765,7 +1767,10 @@
         h('button', { class: 'link t', type: 'button', onclick: () => select({ kind: item.kind, id: item.id }) }, item.title || 'Untitled'),
         h('span', { class: 'count' }, issues.length)))
         : h('p', { class: 'allgood' }, icon('check'), 'Nothing else to fix'),
-      h('p', { class: 'help', style: 'margin-top:14px' }, 'These checks catch structural problems.'));
+      h('p', { class: 'help', style: 'margin-top:14px' }, 'These checks catch structural problems. For a review of the content itself, ask your AI assistant.'),
+      except && except.kind === 'case' ? h('button', {
+        class: 'btn small', type: 'button', onclick: () => reviewCase(except),
+      }, icon('sparkle'), 'Review this case with AI') : null);
   }
 
   function jumpToStep(id) {
@@ -1943,6 +1948,155 @@
     saveExport(`${name}-${new Date().toISOString().slice(0, 10)}.csv`, S.toCSV(P(), cases, o), plural(cases.length, 'test case'));
   }
 
+  // ---------- Work with AI ----------
+  // Stepwise doesn't run an assistant itself. It opens the folder in the one you use (Claude's
+  // desktop app, Claude Code in a terminal, or Codex), signed in to your own account, through the
+  // link each one registers, with a short prompt typed in but not sent. Whatever the assistant
+  // changes shows up under Outside changes, to keep or undo.
+
+  const ASSISTANTS = {
+    claude: {
+      name: 'Claude', label: 'Claude (desktop app)', after: 'Confirm the folder when Claude asks.',
+      missing: 'The Claude desktop app isn’t installed.', get: 'Get Claude', url: 'https://claude.ai/download',
+    },
+    'claude-code': {
+      name: 'Claude Code', label: 'Claude Code (terminal)', after: 'It opens in a new terminal window.',
+      missing: 'Claude Code’s links aren’t set up. Install Claude Code, run claude in a terminal and send it any message once, then try again.',
+      get: 'How to install', url: 'https://code.claude.com/docs/en/setup',
+    },
+    codex: {
+      name: 'Codex', label: 'Codex', after: '',
+      missing: 'The Codex app isn’t installed. It’s available for macOS and Windows.', get: 'Get Codex', url: 'https://developers.openai.com/codex/app',
+    },
+  };
+  const assistant = () => ASSISTANTS[state.assistant] ? state.assistant : 'claude';
+  const assistantName = () => ASSISTANTS[assistant()].name;
+
+  // With `live`, a change is saved straight away (and `live` called); otherwise the caller saves it.
+  function assistantSelect(live) {
+    const el = h('select', { class: 'field', 'aria-label': 'AI assistant' },
+      Object.entries(ASSISTANTS).map(([v, a]) => h('option', { value: v }, a.label)));
+    el.value = assistant();
+    if (live) el.addEventListener('change', () => { setAssistant(el.value); live(); });
+    return el;
+  }
+
+  // Kept in Stepwise's own settings (the app's config folder), not in the test case folder.
+  function setAssistant(value) {
+    if (!ASSISTANTS[value] || value === state.assistant) return;
+    state.assistant = value;
+    invoke('save_settings', { settings: { assistant: value } }).catch(e => console.error(e));
+  }
+
+  function needFolder() {
+    return ask({
+      title: 'Open a folder first',
+      body: 'Your AI assistant works directly on the test case files, so open (or set up) a folder for them first. The sample project lives inside Stepwise, so there are no files to work on.',
+      buttons: [{ label: 'Cancel' }, { label: 'Open folder…', value: 'open', primary: true }],
+    }).then(r => { if (r) openFolder(); });
+  }
+
+  // The prompts point at a workflow in AGENTS.md. If the folder doesn't have it yet, offer to add it.
+  async function ensureWorkflows() {
+    if (W.hasWorkflows(await readText('AGENTS.md').catch(() => null))) return true;
+    const r = await ask({
+      title: 'Add the AI instructions first?',
+      body: 'This prompt asks the assistant to follow a workflow in AGENTS.md, which this folder doesn’t have yet. Stepwise can add AGENTS.md and the other instruction files (an AGENTS.md you edited keeps its text).',
+      buttons: [{ label: 'Cancel' }, { label: 'Open without them', value: 'skip' }, { label: 'Add files', value: 'add', primary: true }],
+    });
+    if (r === 'add') await addAiFiles();
+    return !!r;
+  }
+
+  // Opens the folder in the chosen assistant, with the prompt typed in for you to check and send.
+  async function handOff(prompt = '') {
+    if (state.mode !== 'folder') return needFolder();
+    await flush(); // so the assistant reads what you see
+    if (prompt && !(await ensureWorkflows())) return;
+    const a = ASSISTANTS[assistant()];
+    try {
+      await invoke('open_assistant', { assistant: assistant(), prompt });
+      toast(`Opened in ${a.name}. ${prompt ? 'Check the prompt, then send it. ' : ''}${a.after}`.trim(), null, 6000);
+    } catch (e) {
+      if (e === 'not-installed') toast(a.missing, { label: a.get, run: () => invoke('open_url', { url: a.url }) }, 12000);
+      else toast(`Couldn’t open ${a.name}: ${e}`);
+    }
+  }
+
+  function reviewCase(c) {
+    handOff(W.prompts.reviewCase(pathOf(c)));
+  }
+
+  async function aiDialog() {
+    if (state.mode !== 'folder') return needFolder();
+    const cur = currentItem();
+    const count = Object.keys(P().cases).length;
+    const run = fn => () => { $('#dialog').close(); fn(); };
+    const action = (label, sub, fn, primary) => h('button', { class: `claude-action${primary ? ' primary' : ''}`, type: 'button', onclick: run(fn) },
+      h('span', { class: 'ca-label' }, label), h('span', { class: 'ca-sub' }, sub));
+    const openLabel = h('span', { class: 'ca-label' }, `Open in ${assistantName()}`);
+    const open = h('button', { class: 'claude-action primary', type: 'button', onclick: run(() => handOff()) },
+      openLabel, h('span', { class: 'ca-sub' }, `Start a session in “${folderLabel(state.current)}”`));
+    const select = assistantSelect(() => { openLabel.textContent = `Open in ${assistantName()}`; });
+    await ask({
+      title: 'Work with AI',
+      body: h('div', {},
+        h('p', {}, 'Opens this folder in your AI assistant, with your own account. Prompts are typed in for you to check before sending. Anything it changes shows up under Outside changes, to keep or undo.'),
+        h('label', { class: 'lbl' }, 'Assistant'), select,
+        h('div', { class: 'claude-actions', style: 'margin-top:14px' },
+          open,
+          cur && cur.kind === 'case' ? action('Review this case', cur.title || 'Untitled', () => reviewCase(cur)) : null,
+          count ? action('Review all cases', plural(count, 'test case'), () => handOff(W.prompts.reviewAll())) : null,
+          action('Draft cases from a user story', 'Paste the story into the prompt', () => handOff(W.prompts.draft())),
+          count > 1 ? action('Find steps worth reusing', 'Repeated steps that could become blocks', () => handOff(W.prompts.findBlocks())) : null,
+          action('New cases from transcript', 'Paste what you said while testing on a device', transcriptDialog))),
+      buttons: [{ label: 'Close' }],
+    });
+  }
+
+  // You narrate while testing, record it, and paste (or drop) the transcript here. Stepwise saves it
+  // in the folder under transcripts/ and points the assistant at that file: a link can't carry a
+  // long transcript, and the file keeps a record of the session.
+  async function transcriptDialog() {
+    if (state.mode !== 'folder') return needFolder();
+    const title = h('input', { class: 'field', placeholder: 'What you tested, e.g. Expense approval on iPhone' });
+    const text = h('textarea', { class: 'field transcript', rows: 10, placeholder: 'Paste the transcript here, or drop a text file (.txt, .md, .vtt, .srt) on this box.' });
+    const error = h('p', { class: 'field-error' });
+    text.addEventListener('dragover', e => { e.preventDefault(); text.classList.add('drop'); });
+    text.addEventListener('dragleave', () => text.classList.remove('drop'));
+    text.addEventListener('drop', async e => {
+      e.preventDefault();
+      text.classList.remove('drop');
+      const file = e.dataTransfer.files[0];
+      if (!file) return;
+      if (file.size > 5e6) { error.textContent = 'That file is too big for a transcript (over 5 MB).'; return; }
+      text.value = await file.text();
+      if (!title.value.trim()) title.value = file.name.replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' ');
+      error.textContent = '';
+    });
+    const r = await ask({
+      title: 'New cases from transcript',
+      body: h('div', {},
+        h('p', {}, `Stepwise saves the transcript in this folder under transcripts/, then opens ${assistantName()} with a prompt to turn it into test cases. Nothing is sent until you send it there.`),
+        h('p', { class: 'help' }, 'The assistant reuses your blocks, uses repeat steps where you repeat yourself, leaves a TODO wherever you didn’t say what should happen, and lists its open questions.')),
+      extra: [h('span', { class: 'lbl' }, 'Title'), title, h('span', { class: 'lbl', style: 'margin-top:10px' }, 'Transcript'), text, error],
+      buttons: [{ label: 'Cancel' }, { label: `Save and open ${assistantName()}`, value: 'ok', primary: true }],
+      validate() {
+        error.textContent = text.value.trim() ? '' : 'Paste or drop a transcript first.';
+        return !error.textContent;
+      },
+    });
+    if (!r) return;
+    const now = new Date();
+    let path;
+    try {
+      path = await invoke('save_transcript', { name: W.transcriptName(title.value, now), text: W.transcriptFile(title.value, text.value, now) });
+    } catch (e) {
+      return toast(`Couldn’t save the transcript: ${e}`);
+    }
+    await handOff(W.prompts.transcript(path));
+  }
+
   async function settingsDialog() {
     const url = h('input', { class: 'field', value: P().settings.adoBaseUrl || '', placeholder: 'https://dev.azure.com/your-org/your-project' });
     const buttons = [{ label: 'Cancel' }, { label: 'Save', value: 'ok', primary: true }];
@@ -1956,10 +2110,13 @@
           toast(n ? `Added or updated ${plural(n, 'file')} for AI assistants` : 'The AI instruction files are up to date');
         },
       }, 'Add or update the AI instruction files'), ' (AGENTS.md, CLAUDE.md and the Claude commands). Edits you made to AGENTS.md are kept.') : null;
+    const ai = assistantSelect();
     const r = await ask({
       title: 'Settings',
       body: h('div', {}, h('p', {}, 'Your Azure DevOps project URL. Used to make work item IDs clickable. Saved in stepwise.json.'), addFiles),
-      extra: [h('span', { class: 'lbl' }, 'ADO project URL'), url],
+      extra: [h('span', { class: 'lbl' }, 'ADO project URL'), url,
+        h('span', { class: 'lbl', style: 'margin-top:14px' }, 'AI assistant'), ai,
+        h('p', { class: 'help', style: 'margin-top:6px' }, 'Work with AI opens your folder in this app. Saved in Stepwise’s own settings, not in your folder.')],
       buttons,
     });
     if (r === 'reset') {
@@ -1970,6 +2127,7 @@
       return;
     }
     if (!r) return;
+    setAssistant(ai.value);
     const value = url.value.trim();
     if (value && !safeBaseUrl(value)) {
       toast('Use a web address starting with https://');
@@ -2043,6 +2201,10 @@
     e.preventDefault();
     invoke('open_url', { url: a.href }).catch(err => toast(`Couldn't open the link: ${err}`));
   });
+  // Files dropped anywhere but a drop box would make the window navigate to them.
+  for (const type of ['dragover', 'drop']) {
+    document.addEventListener(type, e => { if (e.dataTransfer?.types?.includes('Files') && !e.defaultPrevented) e.preventDefault(); });
+  }
   listen('workspace-changed', onExternalChanges);
   listen('watch-error', ({ root, error }) => {
     if (root === state.root && !state.watchWarned) toast(watchProblem(error), null, 12000);
@@ -2078,6 +2240,7 @@
     if (!saved || (saved.kind !== 'coverage' && !currentItem())) selectFirst();
     renderAll();
     state.folders = await invoke('load_folders').catch(() => []);
+    state.assistant = (await invoke('load_settings').catch(() => ({}))).assistant || null;
     renderTop();
     // Reopen the folder you were last working in.
     const first = state.folders[0];
