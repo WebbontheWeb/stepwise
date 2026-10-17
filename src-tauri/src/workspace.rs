@@ -498,6 +498,45 @@ pub fn save_transcript(ws: State<Workspace>, name: String, text: String) -> Resu
     })
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptPrivacy {
+    /// The folder is inside a git repository, so transcripts could be committed and shared.
+    in_git: bool,
+    /// The folder's .gitignore already leaves transcripts/ out.
+    ignored: bool,
+}
+
+fn ignores_transcripts(gitignore: &str) -> bool {
+    gitignore.lines().any(|l| matches!(l.trim(), "transcripts" | "transcripts/" | "/transcripts" | "/transcripts/"))
+}
+
+#[tauri::command]
+pub fn transcript_privacy(ws: State<Workspace>) -> Result<TranscriptPrivacy, String> {
+    ws.with(|o| {
+        let in_git = o.root.ancestors().any(|d| d.join(".git").exists());
+        let ignored = read_opt(&resolve(&o.root, ".gitignore")?).map_err(err)?.is_some_and(|t| ignores_transcripts(&t));
+        Ok(TranscriptPrivacy { in_git, ignored })
+    })
+}
+
+/// Adds transcripts/ to the folder's .gitignore (only when you ask for it in the transcript dialog).
+#[tauri::command]
+pub fn ignore_transcripts(ws: State<Workspace>) -> Result<(), String> {
+    ws.with(|o| {
+        let full = resolve(&o.root, ".gitignore")?;
+        let mut text = read_opt(&full).map_err(err)?.unwrap_or_default();
+        if ignores_transcripts(&text) {
+            return Ok(());
+        }
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str("# Narrated test sessions saved by Stepwise\n/transcripts/\n");
+        write_atomic(&full, &text).map_err(err)
+    })
+}
+
 fn is_transcript_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= 100 && !name.starts_with('-') && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
@@ -616,6 +655,8 @@ mod tests {
         for bad in [".git/hooks/pre-commit", ".gitignore", "README.md", ".claude/settings.json", ".claude/commands/x/y.md", "transcripts/a.md", "cases/sub/a.md"] {
             assert!(!is_managed(bad), "{bad}");
         }
+        assert!(ignores_transcripts("node_modules/\n/transcripts/\n"));
+        assert!(!ignores_transcripts("transcripts-old/\n"));
     }
 
     #[test]

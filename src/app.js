@@ -2108,10 +2108,20 @@
       if (!title.value.trim()) title.value = file.name.replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' ');
       error.textContent = '';
     });
+    // Transcripts are saved in the folder, which may be a repository shared with the client: say so,
+    // and offer (never assume) to keep them out of git.
+    const privacy = await invoke('transcript_privacy').catch(() => ({ inGit: false, ignored: false }));
+    const ignore = privacy.inGit && !privacy.ignored ? h('input', { type: 'checkbox' }) : null;
     const r = await ask({
       title: 'New cases from transcript',
       body: h('div', {},
         h('p', {}, `Stepwise saves the transcript in this folder under transcripts/, then opens ${assistantName()} with a prompt to turn it into test cases. Nothing is sent until you send it there.`),
+        h('p', { class: 'help' }, privacy.inGit
+          ? (privacy.ignored
+            ? 'This folder is in a git repository whose .gitignore already leaves transcripts/ out, so they won’t be committed.'
+            : 'This folder is in a git repository, so a transcript could be committed and shared with everyone who has the repository, including a client.')
+          : 'Anyone who can open this folder (a shared drive, a synced folder) can read the transcripts.'),
+        ignore ? h('label', { class: 'check' }, ignore, 'Keep transcripts out of git (adds transcripts/ to this folder’s .gitignore)') : null,
         h('p', { class: 'help' }, 'The assistant reuses your blocks, uses repeat steps where you repeat yourself, leaves a TODO wherever you didn’t say what should happen, and lists its open questions.')),
       extra: [h('span', { class: 'lbl' }, 'Title'), title, h('span', { class: 'lbl', style: 'margin-top:10px' }, 'Transcript'), text, error],
       buttons: [{ label: 'Cancel' }, { label: `Save and open ${assistantName()}`, value: 'ok', primary: true }],
@@ -2121,6 +2131,9 @@
       },
     });
     if (!r) return;
+    if (ignore && ignore.checked) {
+      try { await invoke('ignore_transcripts'); } catch (e) { toast(`Couldn’t update .gitignore: ${e}`); }
+    }
     const now = new Date();
     let path;
     try {

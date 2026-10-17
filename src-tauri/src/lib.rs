@@ -119,6 +119,8 @@ pub fn run() {
             workspace::write_text,
             workspace::remove_file,
             workspace::file_exists,
+            workspace::transcript_privacy,
+            workspace::ignore_transcripts,
             workspace::save_transcript,
             assistant::load_settings,
             assistant::save_settings,

@@ -159,6 +159,10 @@ the box. Stepwise saves it as `transcripts/<date>-<title>.md` in the test case f
 replacing an earlier one) and opens the assistant with a prompt pointing at that file. A long
 transcript wouldn't fit in a link, and the file keeps a record of the session.
 
+Because the transcript is saved in the test case folder, anyone who can open that folder can read
+it. If the folder is a git repository (perhaps one shared with a client), the dialog says so and
+offers to add `transcripts/` to that folder's `.gitignore`. It only does that if you tick the box.
+
 The assistant follows the "Cases from a transcript" workflow in `AGENTS.md`: it splits the session
 into cases in Stepwise's format, reuses your blocks, uses repeat steps where you repeated a sequence,
 sets `state: Design`, never invents an expected result (it writes `Expected: TODO: what should
