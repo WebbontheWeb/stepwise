@@ -364,6 +364,8 @@
 
   function cell(v, sep) {
     v = String(v ?? '');
+    // Spreadsheets run CSV cells starting with these as formulas; a leading ' keeps them as text.
+    if (sep === ',' && /^[=+\-@\t\r]/.test(v)) v = "'" + v;
     // CSV quotes any cell with quotes; pasted TSV only needs it for tabs and line breaks.
     const needs = sep === '\t' ? /[\t\n\r]/.test(v) : /[",\n\r]/.test(v);
     return needs ? `"${v.replace(/"/g, '""')}"` : v;

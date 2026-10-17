@@ -55,3 +55,11 @@ console.log('--- TSV ---\n' + S.toGridTSV(c, textRows.slice(0, 3), {}));
 const csv = S.toCSV(p, [p.cases['expense-pdf-export']], {});
 console.log('--- CSV ---\n' + csv);
 console.log(S.relatedOf(p, c), Object.keys(S.coverage(p)));
+
+// formula-looking cells are neutralized in CSV, left alone in grid paste
+const evil = S.parseCase('evil', `---\ntitle: =HYPERLINK("http://x")\n---\n\n## Steps\n\n1. -2+3 opens calc\n   Expected: @SUM(A1)\n`);
+const evilCsv = S.toCSV(p, [evil], {});
+assert.match(evilCsv, /,"'=HYPERLINK\(""http:\/\/x""\)",/);
+assert.match(evilCsv, /,1,'-2\+3 opens calc,'@SUM\(A1\),/);
+assert.match(S.toGridTSV(evil, S.flatten(p, evil), {}), /^=HYPERLINK/);
+console.log('formula cells ok');

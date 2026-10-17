@@ -120,8 +120,17 @@
   function lintOf(item) {
     return item.kind === 'case' ? S.lintCase(P(), item) : S.lintBlock(P(), item);
   }
+  // Only http(s) URLs become links, so a shared stepwise.json can't smuggle in javascript: links.
+  function safeBaseUrl(text) {
+    try {
+      const u = new URL(String(text || '').trim());
+      return u.protocol === 'https:' || u.protocol === 'http:' ? u.href.replace(/\/+$/, '') : null;
+    } catch (e) {
+      return null;
+    }
+  }
   function adoUrl(id) {
-    const base = (P().settings.adoBaseUrl || '').replace(/\/+$/, '');
+    const base = safeBaseUrl(P().settings.adoBaseUrl);
     return base ? `${base}/_workitems/edit/${encodeURIComponent(id)}` : null;
   }
 
@@ -1339,7 +1348,12 @@
       return;
     }
     if (!r) return;
-    P().settings.adoBaseUrl = url.value.trim();
+    const value = url.value.trim();
+    if (value && !safeBaseUrl(value)) {
+      toast('Use a web address starting with https://');
+      return;
+    }
+    P().settings.adoBaseUrl = value;
     touch('settings');
     renderAll();
   }
